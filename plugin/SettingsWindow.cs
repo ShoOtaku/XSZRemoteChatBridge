@@ -12,7 +12,7 @@ public sealed class SettingsWindow
     private readonly Action _reloadAction;
 
     private BridgeOptions _draft = new();
-    private string _newKeywordRuleText = string.Empty;
+    private int _selectedKeywordRuleIndex = -1;
     private string _keywordChannelFilter = string.Empty;
     private string _fallbackChannelFilter = string.Empty;
     private bool _hasPendingApply;
@@ -31,7 +31,7 @@ public sealed class SettingsWindow
     {
         _draft = Clone(source);
         _draft.Normalize();
-        _newKeywordRuleText = string.Empty;
+        EnsureSelectedKeywordRuleIndex();
         _keywordChannelFilter = string.Empty;
         _fallbackChannelFilter = string.Empty;
         _hasPendingApply = false;
@@ -168,101 +168,164 @@ public sealed class SettingsWindow
         DrawKeywordChannelRulesEditor();
 
         ImGui.Separator();
-        ImGui.TextWrapped("全局频道白名单（仅在未配置关键词映射时生效）");
-        if (DrawChannelSelector(_draft.ChannelAllowList, ref _fallbackChannelFilter, "频道过滤（名称或ID）", "channel_select_fallback", 180))
-            QueueAutoApply();
+        if (ImGui.CollapsingHeader("全局频道白名单（仅在未配置关键词映射时生效）", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            if (DrawChannelSelector(_draft.ChannelAllowList, ref _fallbackChannelFilter, "频道ID", "channel_select_fallback", 170))
+                QueueAutoApply();
+        }
     }
 
     private void DrawKeywordChannelRulesEditor()
     {
-        ImGui.TextWrapped("关键词-频道映射：每个关键词可独立勾选频道。");
+        EnsureSelectedKeywordRuleIndex();
 
-        ImGui.InputText("新增关键词", ref _newKeywordRuleText, 256);
+        ImGui.TextWrapped("关键词管理：左侧维护关键词，右侧为当前关键词配置频道。");
+        var region = ImGui.GetContentRegionAvail();
+        var panelHeight = MathF.Max(280f, MathF.Min(420f, region.Y));
+        var leftWidth = MathF.Max(220f, region.X * 0.4f);
+
+        ImGui.BeginChild("keyword_panel_left", new Vector2(leftWidth, panelHeight), true);
+        DrawKeywordRuleListPane();
+        ImGui.EndChild();
+
         ImGui.SameLine();
-        if (ImGui.Button("添加关键词"))
-            TryAddKeywordRule();
-
-        ImGui.BeginChild("keyword_channel_rule_list", new Vector2(-1, 320), true);
-        if (_draft.KeywordChannelRules.Count == 0)
-        {
-            ImGui.TextDisabled("暂无映射规则；此时按全局频道白名单 + 关键词匹配运行。");
-            ImGui.EndChild();
-            return;
-        }
-
-        for (var i = 0; i < _draft.KeywordChannelRules.Count; i++)
-        {
-            var rule = _draft.KeywordChannelRules[i];
-            rule.ChannelAllowList ??= [];
-            ImGui.PushID(i);
-            var keyword = rule.Keyword;
-            if (ImGui.InputText("关键词", ref keyword, 256))
-            {
-                rule.Keyword = keyword;
-                QueueAutoApply();
-            }
-
-            ImGui.SameLine();
-            if (ImGui.SmallButton("删除"))
-            {
-                _draft.KeywordChannelRules.RemoveAt(i);
-                QueueAutoApply();
-                ImGui.PopID();
-                i--;
-                continue;
-            }
-
-            if (DrawChannelSelector(rule.ChannelAllowList, ref _keywordChannelFilter, "频道过滤（名称或ID）", "channel_select_keyword", 130))
-                QueueAutoApply();
-
-            if (ImGui.Button("全选频道"))
-            {
-                rule.ChannelAllowList = [.. Enum.GetValues<XivChatType>()];
-                QueueAutoApply();
-            }
-
-            ImGui.SameLine();
-            if (ImGui.Button("清空频道"))
-            {
-                rule.ChannelAllowList.Clear();
-                QueueAutoApply();
-            }
-
-            if (i < _draft.KeywordChannelRules.Count - 1)
-                ImGui.Separator();
-
-            ImGui.PopID();
-        }
-
+        ImGui.BeginChild("keyword_panel_right", new Vector2(0, panelHeight), true);
+        DrawKeywordRuleDetailPane();
         ImGui.EndChild();
     }
 
-    private void TryAddKeywordRule()
+    private void DrawKeywordRuleListPane()
     {
-        var keyword = (_newKeywordRuleText ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(keyword))
-            return;
-
-        var comparison = _draft.KeywordCaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        var existing = _draft.KeywordChannelRules
-            .FirstOrDefault(rule => string.Equals(rule.Keyword, keyword, comparison));
-        if (existing == null)
+        var buttonAreaHeight = 46f;
+        ImGui.BeginChild("keyword_rule_items", new Vector2(-1, -buttonAreaHeight), false);
+        if (_draft.KeywordChannelRules.Count == 0)
         {
-            _draft.KeywordChannelRules.Add(new BridgeKeywordChannelRule
-            {
-                Keyword = keyword,
-                ChannelAllowList = [.. _draft.ChannelAllowList]
-            });
-            QueueAutoApply();
+            ImGui.TextDisabled("暂无关键词");
         }
         else
         {
-            existing.ChannelAllowList ??= [];
-            existing.ChannelAllowList.UnionWith(_draft.ChannelAllowList);
+            for (var i = 0; i < _draft.KeywordChannelRules.Count; i++)
+            {
+                var text = (_draft.KeywordChannelRules[i].Keyword ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(text))
+                    text = "(未命名关键词)";
+
+                var selected = i == _selectedKeywordRuleIndex;
+                var itemWidth = MathF.Max(1f, ImGui.GetContentRegionAvail().X);
+                ImGui.PushID(i);
+                if (ImGui.Selectable(text, selected, ImGuiSelectableFlags.None, new Vector2(itemWidth, 34)))
+                {
+                    _selectedKeywordRuleIndex = i;
+                    _keywordChannelFilter = string.Empty;
+                }
+                ImGui.PopID();
+            }
+        }
+        ImGui.EndChild();
+
+        if (ImGui.Button("+", new Vector2(36, 30)))
+            AddKeywordRule();
+
+        ImGui.SameLine();
+        var canRemove = _selectedKeywordRuleIndex >= 0 && _selectedKeywordRuleIndex < _draft.KeywordChannelRules.Count;
+        if (!canRemove)
+            ImGui.BeginDisabled();
+        if (ImGui.Button("-", new Vector2(36, 30)))
+            RemoveSelectedKeywordRule();
+        if (!canRemove)
+            ImGui.EndDisabled();
+    }
+
+    private void DrawKeywordRuleDetailPane()
+    {
+        EnsureSelectedKeywordRuleIndex();
+        if (_selectedKeywordRuleIndex < 0 || _selectedKeywordRuleIndex >= _draft.KeywordChannelRules.Count)
+        {
+            ImGui.TextDisabled("请先在左侧点击 + 新增关键词。");
+            return;
+        }
+
+        var rule = _draft.KeywordChannelRules[_selectedKeywordRuleIndex];
+        rule.ChannelAllowList ??= [];
+
+        ImGui.Text("关键词");
+        var keyword = rule.Keyword ?? string.Empty;
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.InputText("##selected_keyword", ref keyword, 256))
+        {
+            rule.Keyword = keyword;
             QueueAutoApply();
         }
 
-        _newKeywordRuleText = string.Empty;
+        ImGui.Spacing();
+        if (DrawChannelSelector(rule.ChannelAllowList, ref _keywordChannelFilter, "频道ID", "channel_select_keyword_detail", 220))
+            QueueAutoApply();
+
+        if (ImGui.Button("全选频道", new Vector2(88, 0)))
+        {
+            rule.ChannelAllowList = [.. Enum.GetValues<XivChatType>()];
+            QueueAutoApply();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("清空频道", new Vector2(88, 0)))
+        {
+            rule.ChannelAllowList.Clear();
+            QueueAutoApply();
+        }
+    }
+
+    private void AddKeywordRule()
+    {
+        var keyword = BuildDefaultKeywordName();
+        _draft.KeywordChannelRules.Add(new BridgeKeywordChannelRule
+        {
+            Keyword = keyword,
+            ChannelAllowList = [.. _draft.ChannelAllowList]
+        });
+        _selectedKeywordRuleIndex = _draft.KeywordChannelRules.Count - 1;
+        _keywordChannelFilter = string.Empty;
+        QueueAutoApply();
+    }
+
+    private void RemoveSelectedKeywordRule()
+    {
+        if (_selectedKeywordRuleIndex < 0 || _selectedKeywordRuleIndex >= _draft.KeywordChannelRules.Count)
+            return;
+
+        _draft.KeywordChannelRules.RemoveAt(_selectedKeywordRuleIndex);
+        if (_draft.KeywordChannelRules.Count == 0)
+            _selectedKeywordRuleIndex = -1;
+        else
+            _selectedKeywordRuleIndex = Math.Clamp(_selectedKeywordRuleIndex, 0, _draft.KeywordChannelRules.Count - 1);
+        _keywordChannelFilter = string.Empty;
+        QueueAutoApply();
+    }
+
+    private string BuildDefaultKeywordName()
+    {
+        var comparer = _draft.KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        for (var index = 1; index <= 9999; index++)
+        {
+            var candidate = $"关键词{index}";
+            var exists = _draft.KeywordChannelRules.Any(rule =>
+                comparer.Equals((rule.Keyword ?? string.Empty).Trim(), candidate));
+            if (!exists)
+                return candidate;
+        }
+
+        return $"关键词{DateTimeOffset.Now.ToUnixTimeSeconds()}";
+    }
+
+    private void EnsureSelectedKeywordRuleIndex()
+    {
+        if (_draft.KeywordChannelRules.Count == 0)
+        {
+            _selectedKeywordRuleIndex = -1;
+            return;
+        }
+
+        _selectedKeywordRuleIndex = Math.Clamp(_selectedKeywordRuleIndex, 0, _draft.KeywordChannelRules.Count - 1);
     }
 
     private static bool DrawChannelSelector(
@@ -275,6 +338,7 @@ public sealed class SettingsWindow
         selectedChannels ??= [];
         var changed = false;
 
+        ImGui.SetNextItemWidth(-1);
         ImGui.InputText(filterLabel, ref channelFilter, 64);
         ImGui.BeginChild(childId, new Vector2(-1, childHeight), true);
         foreach (var chatType in Enum.GetValues<XivChatType>().OrderBy(value => (int)value))

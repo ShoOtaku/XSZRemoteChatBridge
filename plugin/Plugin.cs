@@ -68,7 +68,6 @@ public sealed class Plugin : IDalamudPlugin
         _module = new RemoteChatBridgeModule(_services, _configuration.Options);
         _module.Init();
 
-        _services.Chat.Print("[RemoteChatBridge] 配置已保存并重新加载");
         _services.Log.Information("[RemoteChatBridge] 配置已保存并重新加载");
     }
 
