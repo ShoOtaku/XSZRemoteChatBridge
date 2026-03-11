@@ -1,0 +1,20 @@
+{
+  "Author": "XSZYYS",
+  "Name": "XSZRemoteChatBridge",
+  "Punchline": "FF14 远程聊天桥接独立插件",
+  "Description": "独立的卫月插件，负责 FF14 聊天上行与机器人下行，支持 WebSocket 下行与 pull 回退。",
+  "InternalName": "XSZRemoteChatBridge",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "utility",
+    "chat",
+    "bridge"
+  ],
+  "DalamudApiLevel": 14,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "IconUrl": "",
+  "Changelog": ""
+}
