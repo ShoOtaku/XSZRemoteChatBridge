@@ -25,10 +25,31 @@ jobs:
       - name: Prepare Dalamud references
         shell: pwsh
         run: |
-          $dalamudZip = Join-Path $env:RUNNER_TEMP "dalamud_latest.zip"
+          $releaseApi = "https://api.github.com/repos/AtmoOmen/Dalamud/releases/latest"
+          $release = Invoke-RestMethod -Uri $releaseApi -Headers @{ "User-Agent" = "XSZRemoteChatBridge-CI" }
+          $asset = $release.assets | Where-Object { $_.name -eq "latest.7z" } | Select-Object -First 1
+          if ($null -eq $asset) {
+            throw "AtmoOmen/Dalamud latest release missing asset: latest.7z"
+          }
+
+          $archivePath = Join-Path $env:RUNNER_TEMP $asset.name
           $dalamudRoot = Join-Path $env:RUNNER_TEMP "dalamud_latest"
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/goatcorp/dalamud-distrib/main/latest.zip" -OutFile $dalamudZip -UseBasicParsing
-          Expand-Archive -Path $dalamudZip -DestinationPath $dalamudRoot -Force
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archivePath -UseBasicParsing
+
+          $sevenZip = Get-Command "7z" -ErrorAction SilentlyContinue
+          if ($null -eq $sevenZip) {
+            throw "7z not found on runner. Please ensure 7-Zip is available on windows-latest."
+          }
+
+          & $sevenZip.Source x $archivePath "-o$dalamudRoot" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract Dalamud archive: $archivePath"
+          }
+
+          if (-not (Test-Path (Join-Path $dalamudRoot "Dalamud.dll"))) {
+            throw "Invalid Dalamud archive content: Dalamud.dll missing"
+          }
+
           "DALAMUD_HOME=$dalamudRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build Release

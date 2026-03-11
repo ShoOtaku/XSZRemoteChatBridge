@@ -11,3 +11,4 @@
 - 新增 `scripts/update-pluginmaster.ps1`，自动新增/更新 `ShoOtaku/DalamudPlugins` 的 `pluginmaster.json` 条目。
 - 更新 `README.md` 与 `plugin/XSZRemoteChatBridge.json`，补充自动发布配置与元数据维护约定。
 - 修复 CI 构建依赖：工作流改为先下载 `dalamud-distrib/latest.zip` 并设置 `DALAMUD_HOME`，避免 GitHub Runner 缺失 Dalamud 安装导致编译失败。
+- 调整 CI 依赖源：改为从 `AtmoOmen/Dalamud` 最新 release 下载 `latest.7z` 并解压，匹配国服 Dalamud 发行源。
