@@ -14,7 +14,7 @@ public sealed class SettingsWindow
     private BridgeOptions _draft = new();
     private int _selectedKeywordRuleIndex = -1;
     private string _keywordChannelFilter = string.Empty;
-    private string _fallbackChannelFilter = string.Empty;
+    private string _uploadAllChannelFilter = string.Empty;
     private bool _hasPendingApply;
     private long _nextAutoApplyAtMs;
 
@@ -33,7 +33,7 @@ public sealed class SettingsWindow
         _draft.Normalize();
         EnsureSelectedKeywordRuleIndex();
         _keywordChannelFilter = string.Empty;
-        _fallbackChannelFilter = string.Empty;
+        _uploadAllChannelFilter = string.Empty;
         _hasPendingApply = false;
         _nextAutoApplyAtMs = 0;
     }
@@ -160,18 +160,43 @@ public sealed class SettingsWindow
         if (ImGui.Combo("关键词匹配模式", ref mode, "任意命中\0全部命中\0"))
         {
             _draft.KeywordMatchMode = (BridgeKeywordMatchMode)Math.Clamp(mode, 0, 1);
+            if (_draft.KeywordMatchMode == BridgeKeywordMatchMode.Any)
+                _draft.KeywordUseRegex = true;
             QueueAutoApply();
         }
 
         EditBool("关键词区分大小写", _draft.KeywordCaseSensitive, value => _draft.KeywordCaseSensitive = value);
-        EditBool("关键词按正则表达式匹配", _draft.KeywordUseRegex, value => _draft.KeywordUseRegex = value);
+        if (_draft.KeywordMatchMode == BridgeKeywordMatchMode.Any)
+        {
+            if (!_draft.KeywordUseRegex)
+            {
+                _draft.KeywordUseRegex = true;
+                QueueAutoApply();
+            }
+
+            var alwaysRegex = true;
+            ImGui.BeginDisabled();
+            ImGui.Checkbox("关键词按正则表达式匹配（任意命中时默认启用）", ref alwaysRegex);
+            ImGui.EndDisabled();
+        }
+        else
+        {
+            EditBool("关键词按正则表达式匹配", _draft.KeywordUseRegex, value => _draft.KeywordUseRegex = value);
+        }
         DrawKeywordChannelRulesEditor();
 
         ImGui.Separator();
-        if (ImGui.CollapsingHeader("全局频道白名单（仅在未配置关键词映射时生效）", ImGuiTreeNodeFlags.DefaultOpen))
+        if (ImGui.CollapsingHeader("指定频道消息全部上传（无视关键词）", ImGuiTreeNodeFlags.DefaultOpen))
         {
-            if (DrawChannelSelector(_draft.ChannelAllowList, ref _fallbackChannelFilter, "频道ID", "channel_select_fallback", 170))
+            if (DrawChannelSelector(
+                    _draft.UploadAllChannelList,
+                    ref _uploadAllChannelFilter,
+                    "频道ID",
+                    "channel_select_upload_all",
+                    170))
+            {
                 QueueAutoApply();
+            }
         }
     }
 
@@ -281,7 +306,7 @@ public sealed class SettingsWindow
         _draft.KeywordChannelRules.Add(new BridgeKeywordChannelRule
         {
             Keyword = keyword,
-            ChannelAllowList = [.. _draft.ChannelAllowList]
+            ChannelAllowList = [.. Enum.GetValues<XivChatType>()]
         });
         _selectedKeywordRuleIndex = _draft.KeywordChannelRules.Count - 1;
         _keywordChannelFilter = string.Empty;
@@ -474,6 +499,7 @@ public sealed class SettingsWindow
             RetryDelayMs = source.RetryDelayMs,
             MinUploadIntervalMs = source.MinUploadIntervalMs,
             ChannelAllowList = source.ChannelAllowList == null ? [] : [.. source.ChannelAllowList],
+            UploadAllChannelList = source.UploadAllChannelList == null ? [] : [.. source.UploadAllChannelList],
             KeywordRules = source.KeywordRules == null ? [] : [.. source.KeywordRules],
             KeywordChannelRules = source.KeywordChannelRules == null
                 ? []

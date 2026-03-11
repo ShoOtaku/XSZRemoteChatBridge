@@ -11,7 +11,9 @@
 **描述:** 插件桥接配置（端点、鉴权、重试、上下行开关等）。
 - 关键词过滤支持两层结构：
   - `KeywordChannelRules`: 关键词-频道映射规则（优先使用）
-  - `KeywordRules + ChannelAllowList`: 兼容旧配置的回退结构
+  - `KeywordRules + 所有频道`: 兼容旧配置的回退结构（不再暴露全局频道白名单）
+- `UploadAllChannelList`: 指定频道全量上报列表，命中后跳过关键词匹配。
+- 当 `KeywordMatchMode=Any` 时，`KeywordUseRegex` 在运行时默认启用。
 
 ### BridgeKeywordChannelRule
 **描述:** 单条关键词映射规则，包含 `Keyword` 与 `ChannelAllowList`，用于实现“每个关键词独立选择频道”。
@@ -21,3 +23,8 @@
 
 ### BridgePullResponse
 **描述:** 下行拉取响应，包含消息列表。
+
+### GameChatSender
+**描述:** 下行发送适配层（移植自 `XSZToolbox/OmenTools` 实现）。
+- 普通文本发送：`UIModule.ProcessChatBoxEntry`。
+- 斜杠命令发送：`ShellCommandModule.ExecuteCommandInner`。

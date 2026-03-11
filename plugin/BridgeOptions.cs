@@ -34,6 +34,7 @@ public sealed class BridgeOptions
     public int MinUploadIntervalMs { get; set; } = 300;
 
     public HashSet<XivChatType> ChannelAllowList { get; set; } = [XivChatType.Party];
+    public HashSet<XivChatType> UploadAllChannelList { get; set; } = [];
     public List<string> KeywordRules { get; set; } = [];
     public List<BridgeKeywordChannelRule> KeywordChannelRules { get; set; } = [];
     public BridgeKeywordMatchMode KeywordMatchMode { get; set; } = BridgeKeywordMatchMode.Any;
@@ -78,8 +79,13 @@ public sealed class BridgeOptions
         WsReconnectBaseDelayMs = Math.Clamp(WsReconnectBaseDelayMs, 500, 60000);
         WsReconnectMaxDelayMs = Math.Clamp(WsReconnectMaxDelayMs, WsReconnectBaseDelayMs, 120000);
 
+        if (KeywordMatchMode == BridgeKeywordMatchMode.Any)
+            KeywordUseRegex = true;
+
         ChannelAllowList ??= [];
-        ChannelAllowList = [.. ChannelAllowList];
+        ChannelAllowList = [];
+        UploadAllChannelList ??= [];
+        UploadAllChannelList = [.. UploadAllChannelList];
         KeywordRules = (KeywordRules ?? [])
             .Select(rule => (rule ?? string.Empty).Trim())
             .Where(rule => !string.IsNullOrWhiteSpace(rule))
@@ -116,7 +122,7 @@ public sealed class BridgeOptions
                 .Select(keyword => new BridgeKeywordChannelRule
                 {
                     Keyword = keyword,
-                    ChannelAllowList = [.. ChannelAllowList]
+                    ChannelAllowList = [.. Enum.GetValues<XivChatType>()]
                 })
                 .ToList();
         }

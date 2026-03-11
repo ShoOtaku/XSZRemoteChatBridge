@@ -26,6 +26,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly HashSet<XivChatType> AllChatTypes = [.. Enum.GetValues<XivChatType>()];
 
     private readonly PluginServices _services;
     private readonly BridgeOptions _options;
@@ -57,6 +58,8 @@ public sealed class RemoteChatBridgeModule : IDisposable
             _services.Log.Information("[RemoteChatBridge] 插件已启用但桥接开关关闭");
             return;
         }
+
+        ValidateBridgeConfiguration();
 
         if (_options.EnableUpstream || _options.LogAllChatMessages)
         {
@@ -144,24 +147,33 @@ public sealed class RemoteChatBridgeModule : IDisposable
         if (string.IsNullOrWhiteSpace(content))
             return;
 
-        if (!BridgeProtocol.TryResolveKeywordRules(
+        IReadOnlyCollection<string> resolvedKeywordRules = [];
+        var uploadAllByChannel = _options.UploadAllChannelList.Contains(type);
+        if (!uploadAllByChannel && !BridgeProtocol.TryResolveKeywordRules(
                 type,
                 _options.KeywordChannelRules,
-                _options.ChannelAllowList,
+                AllChatTypes,
                 _options.KeywordRules,
                 _options.KeywordCaseSensitive,
-                out var resolvedKeywordRules))
+                out resolvedKeywordRules))
         {
             HandleDropped($"频道未命中: {type}");
             return;
         }
 
-        if (!BridgeProtocol.IsKeywordMatched(
+        if (!uploadAllByChannel && resolvedKeywordRules.Count == 0)
+        {
+            HandleDropped("关键词规则为空");
+            return;
+        }
+
+        var useRegex = _options.KeywordMatchMode == BridgeKeywordMatchMode.Any || _options.KeywordUseRegex;
+        if (!uploadAllByChannel && !BridgeProtocol.IsKeywordMatched(
                 content,
                 resolvedKeywordRules,
                 _options.KeywordMatchMode,
                 _options.KeywordCaseSensitive,
-                _options.KeywordUseRegex))
+                useRegex))
         {
             HandleDropped("关键词未命中");
             return;
@@ -299,29 +311,37 @@ public sealed class RemoteChatBridgeModule : IDisposable
 
     private async Task DispatchDownlinkContentAsync(string content)
     {
-        var command = BuildDownlinkCommand(content, _options.DownlinkPrefix);
-        if (string.IsNullOrWhiteSpace(command))
+        var normalizedCommand = BuildDownlinkCommand(content, _options.DownlinkPrefix);
+        if (string.IsNullOrWhiteSpace(normalizedCommand))
             return;
 
         try
         {
             await _services.Framework.RunOnFrameworkThread(() =>
             {
-                if (command.StartsWith("/", StringComparison.Ordinal))
-                {
-                    _services.Command.ProcessCommand(command);
+                var textToSend = NormalizeDownlinkText(normalizedCommand);
+                if (string.IsNullOrWhiteSpace(textToSend))
                     return;
-                }
 
-                _services.Chat.Print(command);
+                var isSlashCommand = textToSend.StartsWith("/", StringComparison.Ordinal);
+                var succeeded = isSlashCommand
+                    ? GameChatSender.TrySendCommand(textToSend, out var sendError)
+                    : GameChatSender.TrySendMessage(GameChatSender.SanitiseText(textToSend), saveToHistory: false, out sendError);
+
+                if (!succeeded)
+                {
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(sendError)
+                        ? "unknown downlink send failure"
+                        : sendError);
+                }
             }).ConfigureAwait(false);
 
             if (_options.LogDownlinkMessages)
-                _services.Log.Information($"[RemoteChatBridge] 下行执行成功: {command}");
+                _services.Log.Information($"[RemoteChatBridge] 下行执行成功: {normalizedCommand}");
         }
         catch (Exception ex)
         {
-            _services.Log.Warning($"[RemoteChatBridge] 下行执行失败: {ex.Message}");
+            _services.Log.Warning($"[RemoteChatBridge] 下行执行失败: {ex.Message}, command={normalizedCommand}");
         }
     }
 
@@ -341,6 +361,14 @@ public sealed class RemoteChatBridgeModule : IDisposable
         return normalizedPrefix.StartsWith("/", StringComparison.Ordinal)
             ? $"{normalizedPrefix} {normalized}"
             : $"{normalizedPrefix}{normalized}";
+    }
+
+    private static string NormalizeDownlinkText(string content)
+    {
+        return (content ?? string.Empty)
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Trim();
     }
 
     private async Task UploadWithRetryAsync(BridgePayload payload, CancellationToken cancellationToken)
@@ -431,5 +459,48 @@ public sealed class RemoteChatBridgeModule : IDisposable
     {
         if (_options.LogDroppedMessages)
             _services.Log.Debug($"[RemoteChatBridge] 丢弃消息: {reason}");
+    }
+
+    private void ValidateBridgeConfiguration()
+    {
+        if (_options.EnableUpstream)
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrWhiteSpace(_options.IngestEndpoint))
+                missing.Add(nameof(_options.IngestEndpoint));
+            if (string.IsNullOrWhiteSpace(_options.BridgeKey))
+                missing.Add(nameof(_options.BridgeKey));
+            if (string.IsNullOrWhiteSpace(_options.BridgeSecret))
+                missing.Add(nameof(_options.BridgeSecret));
+            if (missing.Count > 0)
+            {
+                _services.Log.Warning(
+                    $"[RemoteChatBridge] 上行配置不完整: {string.Join(", ", missing)}。当前聊天消息不会上行到机器人。");
+            }
+        }
+
+        if (_options.EnableDownstream)
+        {
+            if (_options.EnableWebSocketDownstream)
+            {
+                var missing = new List<string>();
+                if (string.IsNullOrWhiteSpace(_options.WebSocketEndpoint))
+                    missing.Add(nameof(_options.WebSocketEndpoint));
+                if (string.IsNullOrWhiteSpace(_options.BridgeKey))
+                    missing.Add(nameof(_options.BridgeKey));
+                if (string.IsNullOrWhiteSpace(_options.BridgeSecret))
+                    missing.Add(nameof(_options.BridgeSecret));
+                if (missing.Count > 0)
+                {
+                    _services.Log.Warning(
+                        $"[RemoteChatBridge] WebSocket 下行配置不完整: {string.Join(", ", missing)}。将持续触发重连并回退 pull。");
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(_options.PullEndpoint))
+            {
+                _services.Log.Warning("[RemoteChatBridge] PullEndpoint 为空，WS 异常时将无法回退 pull。");
+            }
+        }
     }
 }
