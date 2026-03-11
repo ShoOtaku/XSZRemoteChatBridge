@@ -59,18 +59,6 @@ if ($null -ne $parsedPluginmaster) {
 }
 
 $metadata = Get-Content -Path $MetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$tags = @()
-if ($null -ne $metadata.Tags) {
-    foreach ($tag in $metadata.Tags) {
-        $tagText = [string]$tag
-        if (-not [string]::IsNullOrWhiteSpace($tagText)) {
-            $tags += $tagText
-        }
-    }
-}
-if ($tags.Count -eq 0) {
-    $tags = @("utility")
-}
 
 $downloadUrl = "https://raw.githubusercontent.com/$DistributionRepo/$DistributionBranch/$PluginPathInRepo"
 $downloadUrl = $downloadUrl.Replace("\", "/")
@@ -106,8 +94,8 @@ $entry = [ordered]@{
     Description         = $description
     ApplicableVersion   = $applicableVersion
     RepoUrl             = $repoUrl
-    Tags                = $tags
-    CategoryTags        = $tags
+    Tags                = @("utility")
+    CategoryTags        = @("utility")
     DalamudApiLevel     = $dalamudApiLevel
     IconUrl             = $iconUrl
     Punchline           = $punchline
