@@ -10,3 +10,4 @@
 - 新增 GitHub Actions 工作流：`main` 推送自动构建、打包并发布 Release。
 - 新增 `scripts/update-pluginmaster.ps1`，自动新增/更新 `ShoOtaku/DalamudPlugins` 的 `pluginmaster.json` 条目。
 - 更新 `README.md` 与 `plugin/XSZRemoteChatBridge.json`，补充自动发布配置与元数据维护约定。
+- 修复 CI 构建依赖：工作流改为先下载 `dalamud-distrib/latest.zip` 并设置 `DALAMUD_HOME`，避免 GitHub Runner 缺失 Dalamud 安装导致编译失败。
