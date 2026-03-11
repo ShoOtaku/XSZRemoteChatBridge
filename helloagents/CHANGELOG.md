@@ -6,6 +6,7 @@
 
 ## [Unreleased]
 
+- 新增“关键词-频道映射”能力：每个关键词可独立配置频道，且保留旧版全局频道+关键词配置的兼容回退。
 - 初始化 HelloAGENTS 知识库与基础 Wiki。
 - 新增 GitHub Actions 工作流：`main` 推送自动构建、打包并发布 Release。
 - 新增 `scripts/update-pluginmaster.ps1`，自动新增/更新 `ShoOtaku/DalamudPlugins` 的 `pluginmaster.json` 条目。

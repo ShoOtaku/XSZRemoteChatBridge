@@ -8,6 +8,12 @@ public enum BridgeKeywordMatchMode
     All = 1
 }
 
+public sealed class BridgeKeywordChannelRule
+{
+    public string Keyword { get; set; } = string.Empty;
+    public HashSet<XivChatType> ChannelAllowList { get; set; } = [];
+}
+
 public sealed class BridgeOptions
 {
     public bool Enabled { get; set; } = true;
@@ -29,6 +35,7 @@ public sealed class BridgeOptions
 
     public HashSet<XivChatType> ChannelAllowList { get; set; } = [XivChatType.Party];
     public List<string> KeywordRules { get; set; } = [];
+    public List<BridgeKeywordChannelRule> KeywordChannelRules { get; set; } = [];
     public BridgeKeywordMatchMode KeywordMatchMode { get; set; } = BridgeKeywordMatchMode.Any;
     public bool KeywordCaseSensitive { get; set; }
     public bool KeywordUseRegex { get; set; }
@@ -72,10 +79,54 @@ public sealed class BridgeOptions
         WsReconnectMaxDelayMs = Math.Clamp(WsReconnectMaxDelayMs, WsReconnectBaseDelayMs, 120000);
 
         ChannelAllowList ??= [];
+        ChannelAllowList = [.. ChannelAllowList];
         KeywordRules = (KeywordRules ?? [])
             .Select(rule => (rule ?? string.Empty).Trim())
             .Where(rule => !string.IsNullOrWhiteSpace(rule))
             .Distinct(KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        KeywordChannelRules = (KeywordChannelRules ?? [])
+            .Select(rule => new BridgeKeywordChannelRule
+            {
+                Keyword = (rule?.Keyword ?? string.Empty).Trim(),
+                ChannelAllowList = rule?.ChannelAllowList == null ? [] : [.. rule.ChannelAllowList]
+            })
+            .Where(rule => !string.IsNullOrWhiteSpace(rule.Keyword))
+            .GroupBy(rule => rule.Keyword, KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var merged = new HashSet<XivChatType>();
+                foreach (var item in group)
+                {
+                    merged.UnionWith(item.ChannelAllowList);
+                }
+
+                return new BridgeKeywordChannelRule
+                {
+                    Keyword = group.First().Keyword,
+                    ChannelAllowList = merged
+                };
+            })
+            .ToList();
+
+        if (KeywordChannelRules.Count == 0 && KeywordRules.Count > 0)
+        {
+            KeywordChannelRules = KeywordRules
+                .Select(keyword => new BridgeKeywordChannelRule
+                {
+                    Keyword = keyword,
+                    ChannelAllowList = [.. ChannelAllowList]
+                })
+                .ToList();
+        }
+
+        if (KeywordRules.Count == 0 && KeywordChannelRules.Count > 0)
+        {
+            KeywordRules = KeywordChannelRules
+                .Select(rule => rule.Keyword)
+                .Distinct(KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
     }
 }

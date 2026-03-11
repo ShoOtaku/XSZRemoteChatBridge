@@ -12,8 +12,9 @@ public sealed class SettingsWindow
     private readonly Action _reloadAction;
 
     private BridgeOptions _draft = new();
-    private string _keywordRulesText = string.Empty;
-    private string _channelFilter = string.Empty;
+    private string _newKeywordRuleText = string.Empty;
+    private string _keywordChannelFilter = string.Empty;
+    private string _fallbackChannelFilter = string.Empty;
     private bool _hasPendingApply;
     private long _nextAutoApplyAtMs;
 
@@ -29,7 +30,10 @@ public sealed class SettingsWindow
     public void LoadFrom(BridgeOptions source)
     {
         _draft = Clone(source);
-        _keywordRulesText = string.Join(Environment.NewLine, _draft.KeywordRules);
+        _draft.Normalize();
+        _newKeywordRuleText = string.Empty;
+        _keywordChannelFilter = string.Empty;
+        _fallbackChannelFilter = string.Empty;
         _hasPendingApply = false;
         _nextAutoApplyAtMs = 0;
     }
@@ -37,8 +41,10 @@ public sealed class SettingsWindow
     public BridgeOptions BuildOptions()
     {
         var options = Clone(_draft);
-        options.KeywordRules = (_keywordRulesText ?? string.Empty)
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        options.KeywordRules = options.KeywordChannelRules
+            .Where(rule => !string.IsNullOrWhiteSpace(rule.Keyword))
+            .Select(rule => rule.Keyword.Trim())
+            .Distinct(options.KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)
             .ToList();
         options.Normalize();
         return options;
@@ -159,30 +165,138 @@ public sealed class SettingsWindow
 
         EditBool("关键词区分大小写", _draft.KeywordCaseSensitive, value => _draft.KeywordCaseSensitive = value);
         EditBool("关键词按正则表达式匹配", _draft.KeywordUseRegex, value => _draft.KeywordUseRegex = value);
-        if (ImGui.InputTextMultiline("关键词规则（每行一个）", ref _keywordRulesText, 8192, new Vector2(-1, 100)))
+        DrawKeywordChannelRulesEditor();
+
+        ImGui.Separator();
+        ImGui.TextWrapped("全局频道白名单（仅在未配置关键词映射时生效）");
+        if (DrawChannelSelector(_draft.ChannelAllowList, ref _fallbackChannelFilter, "频道过滤（名称或ID）", "channel_select_fallback", 180))
             QueueAutoApply();
+    }
 
-        ImGui.InputText("频道过滤（名称或ID）", ref _channelFilter, 64);
-        ImGui.BeginChild("channel_select", new Vector2(-1, 180), true);
-        foreach (var chatType in Enum.GetValues<XivChatType>().OrderBy(value => (int)value))
+    private void DrawKeywordChannelRulesEditor()
+    {
+        ImGui.TextWrapped("关键词-频道映射：每个关键词可独立勾选频道。");
+
+        ImGui.InputText("新增关键词", ref _newKeywordRuleText, 256);
+        ImGui.SameLine();
+        if (ImGui.Button("添加关键词"))
+            TryAddKeywordRule();
+
+        ImGui.BeginChild("keyword_channel_rule_list", new Vector2(-1, 320), true);
+        if (_draft.KeywordChannelRules.Count == 0)
         {
-            var label = BuildChannelDisplayLabel(chatType);
-            var searchableText = $"{BridgeProtocol.GetChatTypeDisplayName(chatType)} {chatType} {(int)chatType}";
-            if (!string.IsNullOrWhiteSpace(_channelFilter) &&
-                searchableText.IndexOf(_channelFilter, StringComparison.OrdinalIgnoreCase) < 0)
-                continue;
+            ImGui.TextDisabled("暂无映射规则；此时按全局频道白名单 + 关键词匹配运行。");
+            ImGui.EndChild();
+            return;
+        }
 
-            var selected = _draft.ChannelAllowList.Contains(chatType);
-            if (ImGui.Checkbox(label, ref selected))
+        for (var i = 0; i < _draft.KeywordChannelRules.Count; i++)
+        {
+            var rule = _draft.KeywordChannelRules[i];
+            rule.ChannelAllowList ??= [];
+            ImGui.PushID(i);
+            var keyword = rule.Keyword;
+            if (ImGui.InputText("关键词", ref keyword, 256))
             {
-                if (selected)
-                    _draft.ChannelAllowList.Add(chatType);
-                else
-                    _draft.ChannelAllowList.Remove(chatType);
+                rule.Keyword = keyword;
                 QueueAutoApply();
             }
+
+            ImGui.SameLine();
+            if (ImGui.SmallButton("删除"))
+            {
+                _draft.KeywordChannelRules.RemoveAt(i);
+                QueueAutoApply();
+                ImGui.PopID();
+                i--;
+                continue;
+            }
+
+            if (DrawChannelSelector(rule.ChannelAllowList, ref _keywordChannelFilter, "频道过滤（名称或ID）", "channel_select_keyword", 130))
+                QueueAutoApply();
+
+            if (ImGui.Button("全选频道"))
+            {
+                rule.ChannelAllowList = [.. Enum.GetValues<XivChatType>()];
+                QueueAutoApply();
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button("清空频道"))
+            {
+                rule.ChannelAllowList.Clear();
+                QueueAutoApply();
+            }
+
+            if (i < _draft.KeywordChannelRules.Count - 1)
+                ImGui.Separator();
+
+            ImGui.PopID();
         }
+
         ImGui.EndChild();
+    }
+
+    private void TryAddKeywordRule()
+    {
+        var keyword = (_newKeywordRuleText ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(keyword))
+            return;
+
+        var comparison = _draft.KeywordCaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        var existing = _draft.KeywordChannelRules
+            .FirstOrDefault(rule => string.Equals(rule.Keyword, keyword, comparison));
+        if (existing == null)
+        {
+            _draft.KeywordChannelRules.Add(new BridgeKeywordChannelRule
+            {
+                Keyword = keyword,
+                ChannelAllowList = [.. _draft.ChannelAllowList]
+            });
+            QueueAutoApply();
+        }
+        else
+        {
+            existing.ChannelAllowList ??= [];
+            existing.ChannelAllowList.UnionWith(_draft.ChannelAllowList);
+            QueueAutoApply();
+        }
+
+        _newKeywordRuleText = string.Empty;
+    }
+
+    private static bool DrawChannelSelector(
+        HashSet<XivChatType> selectedChannels,
+        ref string channelFilter,
+        string filterLabel,
+        string childId,
+        float childHeight)
+    {
+        selectedChannels ??= [];
+        var changed = false;
+
+        ImGui.InputText(filterLabel, ref channelFilter, 64);
+        ImGui.BeginChild(childId, new Vector2(-1, childHeight), true);
+        foreach (var chatType in Enum.GetValues<XivChatType>().OrderBy(value => (int)value))
+        {
+            var searchableText = $"{BridgeProtocol.GetChatTypeDisplayName(chatType)} {chatType} {(int)chatType}";
+            if (!string.IsNullOrWhiteSpace(channelFilter) &&
+                searchableText.IndexOf(channelFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                continue;
+
+            var selected = selectedChannels.Contains(chatType);
+            if (!ImGui.Checkbox(BuildChannelDisplayLabel(chatType), ref selected))
+                continue;
+
+            if (selected)
+                selectedChannels.Add(chatType);
+            else
+                selectedChannels.Remove(chatType);
+            changed = true;
+        }
+
+        ImGui.EndChild();
+        return changed;
     }
 
     private void DrawBasicDownstreamSettings()
@@ -297,6 +411,13 @@ public sealed class SettingsWindow
             MinUploadIntervalMs = source.MinUploadIntervalMs,
             ChannelAllowList = source.ChannelAllowList == null ? [] : [.. source.ChannelAllowList],
             KeywordRules = source.KeywordRules == null ? [] : [.. source.KeywordRules],
+            KeywordChannelRules = source.KeywordChannelRules == null
+                ? []
+                : source.KeywordChannelRules.Select(rule => new BridgeKeywordChannelRule
+                {
+                    Keyword = rule.Keyword ?? string.Empty,
+                    ChannelAllowList = rule.ChannelAllowList == null ? [] : [.. rule.ChannelAllowList]
+                }).ToList(),
             KeywordMatchMode = source.KeywordMatchMode,
             KeywordCaseSensitive = source.KeywordCaseSensitive,
             KeywordUseRegex = source.KeywordUseRegex,

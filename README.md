@@ -5,7 +5,7 @@ FF14 远程聊天桥接独立卫月插件仓库。
 
 ## 功能概览
 
-- 上行：监听指定聊天频道与关键词，`POST /ff14/bridge/ingest`
+- 上行：监听指定聊天频道与关键词，支持“每个关键词独立配置频道”，`POST /ff14/bridge/ingest`
 - 下行：
   - 首选 `WS /ff14/bridge/ws`
   - 失败自动回退 `POST /ff14/bridge/pull`
@@ -14,6 +14,7 @@ FF14 远程聊天桥接独立卫月插件仓库。
   - 基础/高级分页
   - 自动保存与自动应用（防抖）
   - 关键词普通匹配/正则匹配
+  - 关键词-频道独立映射（每个关键词可单独勾选频道）
   - 频道中文名显示（可搜索）
   - 调试开关（可打印全部聊天频道名与 ID）
 
@@ -45,7 +46,7 @@ dotnet build .\plugin\XSZRemoteChatBridge.csproj -c Debug
    - `WebSocketEndpoint`
    - `BridgeKey`
    - `BridgeSecret`
-3. 根据需要设置频道与关键词规则（支持正则）。
+3. 根据需要设置关键词规则，并为每个关键词单独勾选频道（支持正则）。
 4. 保存为自动生效，无需手动点击“保存并应用”。
 
 ## 自动发布（GitHub Actions）

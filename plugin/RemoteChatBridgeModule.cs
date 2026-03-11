@@ -144,7 +144,13 @@ public sealed class RemoteChatBridgeModule : IDisposable
         if (string.IsNullOrWhiteSpace(content))
             return;
 
-        if (!BridgeProtocol.IsChannelAllowed(type, _options.ChannelAllowList))
+        if (!BridgeProtocol.TryResolveKeywordRules(
+                type,
+                _options.KeywordChannelRules,
+                _options.ChannelAllowList,
+                _options.KeywordRules,
+                _options.KeywordCaseSensitive,
+                out var resolvedKeywordRules))
         {
             HandleDropped($"频道未命中: {type}");
             return;
@@ -152,7 +158,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
 
         if (!BridgeProtocol.IsKeywordMatched(
                 content,
-                _options.KeywordRules,
+                resolvedKeywordRules,
                 _options.KeywordMatchMode,
                 _options.KeywordCaseSensitive,
                 _options.KeywordUseRegex))

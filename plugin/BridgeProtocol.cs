@@ -162,6 +162,41 @@ public static class BridgeProtocol
         return allowList.Contains(chatType);
     }
 
+    public static bool TryResolveKeywordRules(
+        XivChatType chatType,
+        IReadOnlyCollection<BridgeKeywordChannelRule> keywordChannelRules,
+        IReadOnlyCollection<XivChatType> fallbackChannels,
+        IReadOnlyCollection<string> fallbackKeywordRules,
+        bool caseSensitive,
+        out IReadOnlyCollection<string> matchedKeywordRules)
+    {
+        matchedKeywordRules = [];
+        var comparer = caseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
+        if (keywordChannelRules != null && keywordChannelRules.Count > 0)
+        {
+            var scopedKeywords = keywordChannelRules
+                .Where(rule => rule != null &&
+                               !string.IsNullOrWhiteSpace(rule.Keyword) &&
+                               IsChannelAllowed(chatType, rule.ChannelAllowList))
+                .Select(rule => rule.Keyword.Trim())
+                .Distinct(comparer)
+                .ToArray();
+
+            if (scopedKeywords.Length == 0)
+                return false;
+
+            matchedKeywordRules = scopedKeywords;
+            return true;
+        }
+
+        if (!IsChannelAllowed(chatType, fallbackChannels))
+            return false;
+
+        matchedKeywordRules = fallbackKeywordRules ?? [];
+        return true;
+    }
+
     public static bool IsKeywordMatched(
         string message,
         IReadOnlyCollection<string> keywordRules,
