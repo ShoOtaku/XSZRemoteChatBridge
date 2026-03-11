@@ -1,0 +1,140 @@
+name: Release And Publish Plugin
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-and-sync:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          dotnet build "plugin/XSZRemoteChatBridge.csproj" -c Release
+
+      - name: Prepare release metadata
+        shell: pwsh
+        run: |
+          $version = "1.0.${{ github.run_number }}.${{ github.run_attempt }}"
+          $tag = "v$version"
+          $rawMessage = @"
+          ${{ github.event.head_commit.message }}
+          "@
+          $changelog = ($rawMessage -split "`r?`n")[0].Trim()
+          if ([string]::IsNullOrWhiteSpace($changelog)) {
+            $changelog = "自动发布 $tag"
+          }
+
+          "ASSEMBLY_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_CHANGELOG=$changelog" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Package plugin artifact
+        shell: pwsh
+        run: |
+          $outputDir = "plugin/bin/Release"
+          if (-not (Test-Path $outputDir)) {
+            throw "Build output missing: $outputDir"
+          }
+
+          $artifactDir = "artifacts"
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          $zipPath = Join-Path $artifactDir "latest.zip"
+          if (Test-Path $zipPath) {
+            Remove-Item -Path $zipPath -Force
+          }
+
+          Compress-Archive -Path (Join-Path $outputDir "*") -DestinationPath $zipPath -Force
+          if (-not (Test-Path $zipPath)) {
+            throw "Package failed: $zipPath"
+          }
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: XSZRemoteChatBridge ${{ env.RELEASE_TAG }}
+          body: ${{ env.RELEASE_CHANGELOG }}
+          files: artifacts/latest.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+
+      - name: Clone distribution repository
+        shell: pwsh
+        env:
+          DALAMUD_PLUGINS_PAT: ${{ secrets.DALAMUD_PLUGINS_PAT }}
+          DALAMUD_PLUGINS_BRANCH: ${{ vars.DALAMUD_PLUGINS_BRANCH }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:DALAMUD_PLUGINS_PAT)) {
+            throw "Missing secret: DALAMUD_PLUGINS_PAT"
+          }
+
+          $distRepo = "ShoOtaku/DalamudPlugins"
+          $distBranch = $env:DALAMUD_PLUGINS_BRANCH
+          if ([string]::IsNullOrWhiteSpace($distBranch)) {
+            $distBranch = "main"
+          }
+
+          $distDir = Join-Path $env:RUNNER_TEMP "DalamudPlugins"
+          if (Test-Path $distDir) {
+            Remove-Item -Path $distDir -Recurse -Force
+          }
+
+          $cloneUrl = "https://x-access-token:$($env:DALAMUD_PLUGINS_PAT)@github.com/$distRepo.git"
+          git clone --depth 1 --branch $distBranch $cloneUrl $distDir
+
+          "DIST_REPO=$distRepo" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DIST_BRANCH=$distBranch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DIST_DIR=$distDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Copy package and update pluginmaster
+        shell: pwsh
+        run: |
+          $pluginPathInRepo = "plugins/XSZRemoteChatBridge/latest.zip"
+          $targetZip = Join-Path $env:DIST_DIR $pluginPathInRepo
+          $targetZipDir = Split-Path -Parent $targetZip
+          New-Item -ItemType Directory -Path $targetZipDir -Force | Out-Null
+          Copy-Item -Path "artifacts/latest.zip" -Destination $targetZip -Force
+
+          & "$env:GITHUB_WORKSPACE/scripts/update-pluginmaster.ps1" `
+            -PluginmasterPath (Join-Path $env:DIST_DIR "pluginmaster.json") `
+            -MetadataPath "$env:GITHUB_WORKSPACE/plugin/XSZRemoteChatBridge.json" `
+            -InternalName "XSZRemoteChatBridge" `
+            -AssemblyVersion $env:ASSEMBLY_VERSION `
+            -Changelog $env:RELEASE_CHANGELOG `
+            -DistributionRepo $env:DIST_REPO `
+            -DistributionBranch $env:DIST_BRANCH `
+            -PluginPathInRepo $pluginPathInRepo
+
+      - name: Commit and push distribution changes
+        shell: pwsh
+        run: |
+          git -C $env:DIST_DIR config user.name "github-actions[bot]"
+          git -C $env:DIST_DIR config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C $env:DIST_DIR add "plugins/XSZRemoteChatBridge/latest.zip" "pluginmaster.json"
+
+          $staged = git -C $env:DIST_DIR diff --cached --name-only
+          if ($null -eq $staged -or [string]::IsNullOrWhiteSpace(($staged -join ""))) {
+            Write-Host "No distribution changes to commit."
+            exit 0
+          }
+
+          git -C $env:DIST_DIR commit -m "chore: publish XSZRemoteChatBridge $env:RELEASE_TAG"
+          git -C $env:DIST_DIR push origin "HEAD:$env:DIST_BRANCH"
+

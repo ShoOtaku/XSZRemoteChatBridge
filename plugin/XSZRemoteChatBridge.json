@@ -5,6 +5,7 @@
   "Description": "独立的卫月插件，负责 FF14 聊天上行与机器人下行，支持 WebSocket 下行与 pull 回退。",
   "InternalName": "XSZRemoteChatBridge",
   "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/ShoOtaku/DalamudPlugins",
   "Tags": [
     "utility",
     "chat",
@@ -16,5 +17,5 @@
   "CanUnloadAsync": false,
   "LoadPriority": 0,
   "IconUrl": "",
-  "Changelog": ""
+  "Changelog": "详见 GitHub Release 与 pluginmaster 更新记录"
 }

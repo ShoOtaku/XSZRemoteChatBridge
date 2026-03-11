@@ -48,6 +48,22 @@ dotnet build .\plugin\XSZRemoteChatBridge.csproj -c Debug
 3. 根据需要设置频道与关键词规则（支持正则）。
 4. 保存为自动生效，无需手动点击“保存并应用”。
 
+## 自动发布（GitHub Actions）
+
+仓库已配置工作流 `.github/workflows/release_publish.yml`：
+
+- 触发条件：`main` 分支有新的 `push`（也支持手动 `workflow_dispatch`）。
+- 执行内容：
+  - 编译 `plugin/XSZRemoteChatBridge.csproj`（Release）
+  - 打包 `latest.zip` 并创建 GitHub Release
+  - 推送到 `ShoOtaku/DalamudPlugins` 的 `plugins/XSZRemoteChatBridge/latest.zip`
+  - 自动新增或更新目标仓库 `pluginmaster.json` 中 `XSZRemoteChatBridge` 条目
+
+需要在当前仓库配置：
+
+- `Secrets.DALAMUD_PLUGINS_PAT`：有目标仓库写权限的 Personal Access Token
+- `Variables.DALAMUD_PLUGINS_BRANCH`（可选）：目标仓库分支名，默认 `main`
+
 ## 机器人仓库
 
 机器人插件已拆分并同步到：  
