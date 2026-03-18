@@ -9,5 +9,6 @@ public sealed class PluginServices
     [PluginService] public ICommandManager Command { get; private set; } = null!;
     [PluginService] public IFramework Framework { get; private set; } = null!;
     [PluginService] public IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] public IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] public IPluginLog Log { get; private set; } = null!;
 }

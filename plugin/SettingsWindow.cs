@@ -143,6 +143,7 @@ public sealed class SettingsWindow
         EditBool("启用上行（游戏聊天 -> 机器人）", _draft.EnableUpstream, value => _draft.EnableUpstream = value);
         EditBool("启用下行（机器人 -> 游戏聊天）", _draft.EnableDownstream, value => _draft.EnableDownstream = value);
         EditBool("优先 WebSocket 下行", _draft.EnableWebSocketDownstream, value => _draft.EnableWebSocketDownstream = value);
+        EditBool("掉线提醒（检测到连接中断弹窗时推送到 QQ）", _draft.EnableDisconnectReminder, value => _draft.EnableDisconnectReminder = value);
     }
 
     private void DrawEndpoints()
@@ -489,6 +490,7 @@ public sealed class SettingsWindow
             EnableUpstream = source.EnableUpstream,
             EnableDownstream = source.EnableDownstream,
             EnableWebSocketDownstream = source.EnableWebSocketDownstream,
+            EnableDisconnectReminder = source.EnableDisconnectReminder,
             IngestEndpoint = source.IngestEndpoint ?? string.Empty,
             PullEndpoint = source.PullEndpoint ?? string.Empty,
             WebSocketEndpoint = source.WebSocketEndpoint ?? string.Empty,

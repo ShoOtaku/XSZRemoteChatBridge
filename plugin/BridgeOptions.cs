@@ -20,6 +20,7 @@ public sealed class BridgeOptions
     public bool EnableUpstream { get; set; } = true;
     public bool EnableDownstream { get; set; } = true;
     public bool EnableWebSocketDownstream { get; set; } = true;
+    public bool EnableDisconnectReminder { get; set; }
 
     public string IngestEndpoint { get; set; } = "http://127.0.0.1:8080/ff14/bridge/ingest";
     public string PullEndpoint { get; set; } = "http://127.0.0.1:8080/ff14/bridge/pull";

@@ -3,14 +3,23 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+using Lumina.Text.ReadOnly;
 
 namespace XSZRemoteChatBridge;
 
 public sealed class RemoteChatBridgeModule : IDisposable
 {
+    private const string DisconnectDialogAddonName = "Dialogue";
+    private const string DisconnectDialogKeyword = "失去了与服务器的连接。";
+    private const int DisconnectNodeScanMaxCount = 2048;
+
     private static readonly HttpClient HttpClient = new()
     {
         Timeout = Timeout.InfiniteTimeSpan
@@ -32,6 +41,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
     private readonly BridgeOptions _options;
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly object _startGate = new();
+    private readonly HashSet<nint> _disconnectReminderTriggeredAddons = [];
     private Task? _pullLoopTask;
     private BridgeWebSocketClient? _wsClient;
     private long _lastUploadAtMs;
@@ -60,6 +70,16 @@ public sealed class RemoteChatBridgeModule : IDisposable
         }
 
         ValidateBridgeConfiguration();
+
+        if (_options.EnableDisconnectReminder)
+        {
+            _services.AddonLifecycle.RegisterListener(AddonEvent.PostDraw, DisconnectDialogAddonName, OnDialoguePostDraw);
+            _services.AddonLifecycle.RegisterListener(AddonEvent.PostHide, DisconnectDialogAddonName, OnDialogueLifecycleCleanup);
+            _services.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, DisconnectDialogAddonName, OnDialogueLifecycleCleanup);
+            _services.Log.Information(
+                $"[RemoteChatBridge] 已启用掉线提醒（监听 {DisconnectDialogAddonName} / {AddonEvent.PostDraw},{AddonEvent.PostHide},{AddonEvent.PreFinalize}），" +
+                $"IngestEndpoint={_options.IngestEndpoint}, BridgeKey={_options.BridgeKey}, BridgeSecret={(string.IsNullOrWhiteSpace(_options.BridgeSecret) ? "<empty>" : "<set>")}");
+        }
 
         if (_options.EnableUpstream || _options.LogAllChatMessages)
         {
@@ -96,6 +116,17 @@ public sealed class RemoteChatBridgeModule : IDisposable
         try
         {
             _services.Chat.ChatMessage -= OnChatMessage;
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            _services.AddonLifecycle.UnregisterListener(AddonEvent.PostDraw, DisconnectDialogAddonName, OnDialoguePostDraw);
+            _services.AddonLifecycle.UnregisterListener(AddonEvent.PostHide, DisconnectDialogAddonName, OnDialogueLifecycleCleanup);
+            _services.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, DisconnectDialogAddonName, OnDialogueLifecycleCleanup);
         }
         catch
         {
@@ -188,6 +219,218 @@ public sealed class RemoteChatBridgeModule : IDisposable
         var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
         var payload = BridgeProtocol.BuildPayload(type, senderName, worldName, content);
         _ = Task.Run(() => UploadWithRetryAsync(payload, _disposeCts.Token), _disposeCts.Token);
+    }
+
+    private void OnDialoguePostDraw(AddonEvent eventType, AddonArgs args)
+    {
+        if (!_options.Enabled || !_options.EnableDisconnectReminder || _disposeCts.IsCancellationRequested)
+            return;
+
+        var addonAddress = args.Addon.Address;
+        if (addonAddress == 0)
+            return;
+
+        if (_disconnectReminderTriggeredAddons.Contains(addonAddress))
+            return;
+
+        if (!ContainsDisconnectMarker(args.Addon))
+            return;
+
+        _disconnectReminderTriggeredAddons.Add(addonAddress);
+        _ = Task.Run(() => PushDisconnectReminderAsync(_disposeCts.Token), _disposeCts.Token);
+    }
+
+    private void OnDialogueLifecycleCleanup(AddonEvent eventType, AddonArgs args)
+    {
+        var addonAddress = args.Addon.Address;
+        if (addonAddress == 0)
+            return;
+
+        _disconnectReminderTriggeredAddons.Remove(addonAddress);
+    }
+
+    private bool ContainsDisconnectMarker(Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr)
+    {
+        return TryMatchDisconnectKeywordInNodeText(addonPtr) || TryMatchDisconnectKeywordInAtkValues(addonPtr);
+    }
+
+    private bool TryMatchDisconnectKeywordInAtkValues(Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr)
+    {
+        foreach (var valuePtr in addonPtr.AtkValues)
+        {
+            if (valuePtr.IsNull)
+                continue;
+
+            object? rawValue;
+            try
+            {
+                rawValue = valuePtr.GetValue();
+            }
+            catch
+            {
+                continue;
+            }
+
+            var text = rawValue switch
+            {
+                string plainText => plainText,
+                ReadOnlySeString seString => seString.ExtractText(),
+                _ => rawValue?.ToString() ?? string.Empty
+            };
+
+            if (string.IsNullOrWhiteSpace(text))
+                continue;
+
+            if (IsDisconnectKeywordMatched(text))
+                return true;
+        }
+
+        return false;
+    }
+
+    private unsafe bool TryMatchDisconnectKeywordInNodeText(Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr)
+    {
+        if (addonPtr.IsNull)
+            return false;
+
+        var addon = (AtkUnitBase*)addonPtr.Address;
+        if (addon == null || addon->RootNode == null)
+            return false;
+
+        var scannedTreeNodeCount = 0;
+        var scannedNodeListNodeCount = 0;
+        var stack = new Stack<nint>();
+        var visitedTreeNodeAddress = new HashSet<nint>();
+        var visitedNodeListAddress = new HashSet<nint>();
+
+        bool TryMatchTextNode(AtkResNode* node)
+        {
+            if (node->Type != NodeType.Text)
+                return false;
+
+            var textNode = node->GetAsAtkTextNode();
+            if (textNode == null)
+                return false;
+
+            string nodeText = string.Empty;
+            string originalText = string.Empty;
+            try
+            {
+                nodeText = textNode->NodeText.ExtractText();
+            }
+            catch
+            {
+                // ignore
+            }
+
+            try
+            {
+                originalText = textNode->OriginalTextPointer.ExtractText();
+            }
+            catch
+            {
+                // ignore
+            }
+
+            if (string.IsNullOrWhiteSpace(nodeText) && string.IsNullOrWhiteSpace(originalText))
+                return false;
+
+            if (IsDisconnectKeywordMatched(nodeText))
+                return true;
+
+            if (IsDisconnectKeywordMatched(originalText))
+                return true;
+
+            return false;
+        }
+
+        bool TryScanNodeList(AtkUldManager* uldManager)
+        {
+            if (uldManager == null || uldManager->NodeList == null || uldManager->NodeListCount == 0)
+                return false;
+
+            var nodeListAddress = (nint)uldManager->NodeList;
+            if (!visitedNodeListAddress.Add(nodeListAddress))
+                return false;
+
+            for (var i = 0; i < uldManager->NodeListCount && scannedNodeListNodeCount < DisconnectNodeScanMaxCount; i++)
+            {
+                var node = uldManager->NodeList[i];
+                if (node == null)
+                    continue;
+
+                scannedNodeListNodeCount++;
+                if (TryMatchTextNode(node))
+                    return true;
+
+                var componentNode = node->GetAsAtkComponentNode();
+                if (componentNode == null || componentNode->Component == null)
+                    continue;
+
+                if (TryScanNodeList(&componentNode->Component->UldManager))
+                    return true;
+            }
+
+            return false;
+        }
+
+        stack.Push((nint)addon->RootNode);
+        while (stack.Count > 0 && scannedTreeNodeCount < DisconnectNodeScanMaxCount)
+        {
+            var nodeAddress = stack.Pop();
+            if (nodeAddress == 0 || !visitedTreeNodeAddress.Add(nodeAddress))
+                continue;
+
+            var node = (AtkResNode*)nodeAddress;
+            scannedTreeNodeCount++;
+
+            if (node->NextSiblingNode != null)
+                stack.Push((nint)node->NextSiblingNode);
+            if (node->ChildNode != null)
+                stack.Push((nint)node->ChildNode);
+
+            if (TryMatchTextNode(node))
+                return true;
+
+            var componentNode = node->GetAsAtkComponentNode();
+            if (componentNode == null || componentNode->Component == null)
+                continue;
+
+            if (componentNode->Component->UldManager.RootNode != null)
+                stack.Push((nint)componentNode->Component->UldManager.RootNode);
+
+            if (TryScanNodeList(&componentNode->Component->UldManager))
+                return true;
+        }
+
+        if (TryScanNodeList(&addon->UldManager))
+            return true;
+        return false;
+    }
+
+    private async Task PushDisconnectReminderAsync(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_options.IngestEndpoint) ||
+            string.IsNullOrWhiteSpace(_options.BridgeKey) ||
+            string.IsNullOrWhiteSpace(_options.BridgeSecret))
+        {
+            HandleDropped("掉线提醒配置不完整，跳过推送");
+            return;
+        }
+
+        var localPlayerName = _services.ObjectTable.LocalPlayer?.Name.TextValue?.Trim() ?? string.Empty;
+        var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
+        var playerDisplay = string.IsNullOrWhiteSpace(localPlayerName)
+            ? "当前角色"
+            : string.IsNullOrWhiteSpace(worldName)
+                ? localPlayerName
+                : $"{localPlayerName}@{worldName}";
+        var content = $"【掉线提醒】检测到连接中断：{DisconnectDialogKeyword}（{playerDisplay}）";
+        var payload = BridgeProtocol.BuildPayload(XivChatType.SystemMessage, "系统", worldName, content);
+        await UploadWithRetryAsync(payload, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PullLoopAsync(CancellationToken cancellationToken)
@@ -461,6 +704,12 @@ public sealed class RemoteChatBridgeModule : IDisposable
             _services.Log.Debug($"[RemoteChatBridge] 丢弃消息: {reason}");
     }
 
+    private static bool IsDisconnectKeywordMatched(string text)
+    {
+        return !string.IsNullOrWhiteSpace(text) &&
+               text.Contains(DisconnectDialogKeyword, StringComparison.Ordinal);
+    }
+
     private void ValidateBridgeConfiguration()
     {
         if (_options.EnableUpstream)
@@ -476,6 +725,22 @@ public sealed class RemoteChatBridgeModule : IDisposable
             {
                 _services.Log.Warning(
                     $"[RemoteChatBridge] 上行配置不完整: {string.Join(", ", missing)}。当前聊天消息不会上行到机器人。");
+            }
+        }
+
+        if (_options.EnableDisconnectReminder)
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrWhiteSpace(_options.IngestEndpoint))
+                missing.Add(nameof(_options.IngestEndpoint));
+            if (string.IsNullOrWhiteSpace(_options.BridgeKey))
+                missing.Add(nameof(_options.BridgeKey));
+            if (string.IsNullOrWhiteSpace(_options.BridgeSecret))
+                missing.Add(nameof(_options.BridgeSecret));
+            if (missing.Count > 0)
+            {
+                _services.Log.Warning(
+                    $"[RemoteChatBridge] 掉线提醒配置不完整: {string.Join(", ", missing)}。检测到掉线弹窗时将无法推送到 QQ。");
             }
         }
 
