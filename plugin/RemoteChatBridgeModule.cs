@@ -17,8 +17,13 @@ namespace XSZRemoteChatBridge;
 public sealed class RemoteChatBridgeModule : IDisposable
 {
     private const string DisconnectDialogAddonName = "Dialogue";
-    private const string DisconnectDialogKeyword = "失去了与服务器的连接。";
     private const int DisconnectNodeScanMaxCount = 2048;
+    private static readonly string[] DisconnectDialogKeywords =
+    [
+        "失去了与服务器的连接。",
+        "已断开连接。",
+        "与服务器的连接已中断。"
+    ];
 
     private static readonly HttpClient HttpClient = new()
     {
@@ -232,11 +237,11 @@ public sealed class RemoteChatBridgeModule : IDisposable
         if (_disconnectReminderTriggeredAddons.Contains(addonAddress))
             return;
 
-        if (!ContainsDisconnectMarker(args.Addon))
+        if (!TryGetMatchedDisconnectKeyword(args.Addon, out var matchedKeyword))
             return;
 
         _disconnectReminderTriggeredAddons.Add(addonAddress);
-        _ = Task.Run(() => PushDisconnectReminderAsync(_disposeCts.Token), _disposeCts.Token);
+        _ = Task.Run(() => PushDisconnectReminderAsync(matchedKeyword, _disposeCts.Token), _disposeCts.Token);
     }
 
     private void OnDialogueLifecycleCleanup(AddonEvent eventType, AddonArgs args)
@@ -248,13 +253,20 @@ public sealed class RemoteChatBridgeModule : IDisposable
         _disconnectReminderTriggeredAddons.Remove(addonAddress);
     }
 
-    private bool ContainsDisconnectMarker(Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr)
+    private bool TryGetMatchedDisconnectKeyword(
+        Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr,
+        out string matchedKeyword)
     {
-        return TryMatchDisconnectKeywordInNodeText(addonPtr) || TryMatchDisconnectKeywordInAtkValues(addonPtr);
+        return TryMatchDisconnectKeywordInNodeText(addonPtr, out matchedKeyword) ||
+               TryMatchDisconnectKeywordInAtkValues(addonPtr, out matchedKeyword);
     }
 
-    private bool TryMatchDisconnectKeywordInAtkValues(Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr)
+    private bool TryMatchDisconnectKeywordInAtkValues(
+        Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr,
+        out string matchedKeyword)
     {
+        matchedKeyword = string.Empty;
+
         foreach (var valuePtr in addonPtr.AtkValues)
         {
             if (valuePtr.IsNull)
@@ -280,15 +292,20 @@ public sealed class RemoteChatBridgeModule : IDisposable
             if (string.IsNullOrWhiteSpace(text))
                 continue;
 
-            if (IsDisconnectKeywordMatched(text))
+            if (TryGetDisconnectKeyword(text, out matchedKeyword))
                 return true;
         }
 
         return false;
     }
 
-    private unsafe bool TryMatchDisconnectKeywordInNodeText(Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr)
+    private unsafe bool TryMatchDisconnectKeywordInNodeText(
+        Dalamud.Game.NativeWrapper.AtkUnitBasePtr addonPtr,
+        out string matchedKeyword)
     {
+        matchedKeyword = string.Empty;
+        var resolvedKeyword = string.Empty;
+
         if (addonPtr.IsNull)
             return false;
 
@@ -334,11 +351,17 @@ public sealed class RemoteChatBridgeModule : IDisposable
             if (string.IsNullOrWhiteSpace(nodeText) && string.IsNullOrWhiteSpace(originalText))
                 return false;
 
-            if (IsDisconnectKeywordMatched(nodeText))
+            if (TryGetDisconnectKeyword(nodeText, out var nodeMatchedKeyword))
+            {
+                resolvedKeyword = nodeMatchedKeyword;
                 return true;
+            }
 
-            if (IsDisconnectKeywordMatched(originalText))
+            if (TryGetDisconnectKeyword(originalText, out var originalMatchedKeyword))
+            {
+                resolvedKeyword = originalMatchedKeyword;
                 return true;
+            }
 
             return false;
         }
@@ -389,7 +412,10 @@ public sealed class RemoteChatBridgeModule : IDisposable
                 stack.Push((nint)node->ChildNode);
 
             if (TryMatchTextNode(node))
+            {
+                matchedKeyword = resolvedKeyword;
                 return true;
+            }
 
             var componentNode = node->GetAsAtkComponentNode();
             if (componentNode == null || componentNode->Component == null)
@@ -399,15 +425,28 @@ public sealed class RemoteChatBridgeModule : IDisposable
                 stack.Push((nint)componentNode->Component->UldManager.RootNode);
 
             if (TryScanNodeList(&componentNode->Component->UldManager))
+            {
+                matchedKeyword = resolvedKeyword;
                 return true;
+            }
         }
 
         if (TryScanNodeList(&addon->UldManager))
+        {
+            matchedKeyword = resolvedKeyword;
             return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(resolvedKeyword))
+        {
+            matchedKeyword = resolvedKeyword;
+            return true;
+        }
+
         return false;
     }
 
-    private async Task PushDisconnectReminderAsync(CancellationToken cancellationToken)
+    private async Task PushDisconnectReminderAsync(string matchedKeyword, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
             return;
@@ -415,9 +454,10 @@ public sealed class RemoteChatBridgeModule : IDisposable
         var localPlayerName = _services.ObjectTable.LocalPlayer?.Name.TextValue?.Trim() ?? string.Empty;
         var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
         var playerDisplay = BuildPlayerDisplay(localPlayerName, worldName);
-        var content = $"【掉线提醒】检测到连接中断：{DisconnectDialogKeyword}（{playerDisplay}）";
+        var content = $"【掉线提醒】检测到连接中断：{matchedKeyword}（{playerDisplay}）";
         var payload = BridgeProtocol.BuildPayload(XivChatType.SystemMessage, "系统", worldName, content);
-        await DispatchDisconnectReminderTargetsAsync(payload, playerDisplay, worldName, cancellationToken).ConfigureAwait(false);
+        await DispatchDisconnectReminderTargetsAsync(payload, playerDisplay, worldName, matchedKeyword, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task PullLoopAsync(CancellationToken cancellationToken)
@@ -619,13 +659,14 @@ public sealed class RemoteChatBridgeModule : IDisposable
         BridgePayload payload,
         string playerDisplay,
         string worldName,
+        string matchedKeyword,
         CancellationToken cancellationToken)
     {
         var serverChanTitle = ServerChanPushClient.BuildDisconnectTitle();
         var serverChanDescription = ServerChanPushClient.BuildDisconnectDescription(
             playerDisplay,
             worldName,
-            DisconnectDialogKeyword);
+            matchedKeyword);
         await DispatchPushTargetsAsync(payload, serverChanTitle, serverChanDescription, "掉线提醒", cancellationToken)
             .ConfigureAwait(false);
     }
@@ -766,10 +807,22 @@ public sealed class RemoteChatBridgeModule : IDisposable
             _services.Log.Debug($"[RemoteChatBridge] 丢弃消息: {reason}");
     }
 
-    private static bool IsDisconnectKeywordMatched(string text)
+    private static bool TryGetDisconnectKeyword(string text, out string matchedKeyword)
     {
-        return !string.IsNullOrWhiteSpace(text) &&
-               text.Contains(DisconnectDialogKeyword, StringComparison.Ordinal);
+        matchedKeyword = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var keyword in DisconnectDialogKeywords)
+        {
+            if (!text.Contains(keyword, StringComparison.Ordinal))
+                continue;
+
+            matchedKeyword = keyword;
+            return true;
+        }
+
+        return false;
     }
 
     private bool IsBotPushAvailable()
