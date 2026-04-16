@@ -15,6 +15,8 @@ public sealed class SettingsWindow
     private int _selectedKeywordRuleIndex = -1;
     private string _keywordChannelFilter = string.Empty;
     private string _uploadAllChannelFilter = string.Empty;
+    private string _keywordCustomChannelInput = string.Empty;
+    private string _uploadAllCustomChannelInput = string.Empty;
     private bool _hasPendingApply;
     private long _nextAutoApplyAtMs;
 
@@ -34,6 +36,8 @@ public sealed class SettingsWindow
         EnsureSelectedKeywordRuleIndex();
         _keywordChannelFilter = string.Empty;
         _uploadAllChannelFilter = string.Empty;
+        _keywordCustomChannelInput = string.Empty;
+        _uploadAllCustomChannelInput = string.Empty;
         _hasPendingApply = false;
         _nextAutoApplyAtMs = 0;
     }
@@ -191,7 +195,9 @@ public sealed class SettingsWindow
         {
             if (DrawChannelSelector(
                     _draft.UploadAllChannelList,
+                    _draft.UploadAllCustomChannelList,
                     ref _uploadAllChannelFilter,
+                    ref _uploadAllCustomChannelInput,
                     "频道ID",
                     "channel_select_upload_all",
                     170))
@@ -284,7 +290,14 @@ public sealed class SettingsWindow
         }
 
         ImGui.Spacing();
-        if (DrawChannelSelector(rule.ChannelAllowList, ref _keywordChannelFilter, "频道ID", "channel_select_keyword_detail", 220))
+        if (DrawChannelSelector(
+                rule.ChannelAllowList,
+                rule.CustomChannelAllowList,
+                ref _keywordChannelFilter,
+                ref _keywordCustomChannelInput,
+                "频道ID",
+                "channel_select_keyword_detail",
+                220))
             QueueAutoApply();
 
         if (ImGui.Button("全选频道", new Vector2(88, 0)))
@@ -297,6 +310,7 @@ public sealed class SettingsWindow
         if (ImGui.Button("清空频道", new Vector2(88, 0)))
         {
             rule.ChannelAllowList.Clear();
+            rule.CustomChannelAllowList.Clear();
             QueueAutoApply();
         }
     }
@@ -307,10 +321,12 @@ public sealed class SettingsWindow
         _draft.KeywordChannelRules.Add(new BridgeKeywordChannelRule
         {
             Keyword = keyword,
-            ChannelAllowList = [.. Enum.GetValues<XivChatType>()]
+            ChannelAllowList = [.. Enum.GetValues<XivChatType>()],
+            CustomChannelAllowList = []
         });
         _selectedKeywordRuleIndex = _draft.KeywordChannelRules.Count - 1;
         _keywordChannelFilter = string.Empty;
+        _keywordCustomChannelInput = string.Empty;
         QueueAutoApply();
     }
 
@@ -325,6 +341,7 @@ public sealed class SettingsWindow
         else
             _selectedKeywordRuleIndex = Math.Clamp(_selectedKeywordRuleIndex, 0, _draft.KeywordChannelRules.Count - 1);
         _keywordChannelFilter = string.Empty;
+        _keywordCustomChannelInput = string.Empty;
         QueueAutoApply();
     }
 
@@ -356,12 +373,15 @@ public sealed class SettingsWindow
 
     private static bool DrawChannelSelector(
         HashSet<XivChatType> selectedChannels,
+        HashSet<int> selectedCustomChannels,
         ref string channelFilter,
+        ref string customChannelInput,
         string filterLabel,
         string childId,
         float childHeight)
     {
         selectedChannels ??= [];
+        selectedCustomChannels ??= [];
         var changed = false;
 
         ImGui.SetNextItemWidth(-1);
@@ -386,7 +406,49 @@ public sealed class SettingsWindow
         }
 
         ImGui.EndChild();
+
+        ImGui.Spacing();
+        ImGui.TextDisabled("自定义频道 ID");
+        ImGui.SetNextItemWidth(-90);
+        ImGui.InputText($"##custom_channel_input_{childId}", ref customChannelInput, 16);
+        ImGui.SameLine();
+        if (ImGui.Button($"+##custom_channel_add_{childId}", new Vector2(70, 0)) &&
+            TryParseCustomChannelId(customChannelInput, out var parsedCustomChannelId))
+        {
+            changed |= selectedCustomChannels.Add(parsedCustomChannelId);
+            customChannelInput = string.Empty;
+        }
+
+        if (selectedCustomChannels.Count > 0)
+        {
+            ImGui.BeginChild($"{childId}_custom_selected", new Vector2(-1, 72), true);
+            foreach (var customChannelId in selectedCustomChannels.OrderBy(value => value).ToArray())
+            {
+                ImGui.PushID(customChannelId);
+                ImGui.TextUnformatted(customChannelId.ToString());
+                ImGui.SameLine();
+                if (ImGui.SmallButton("移除"))
+                {
+                    selectedCustomChannels.Remove(customChannelId);
+                    changed = true;
+                }
+
+                ImGui.PopID();
+            }
+
+            ImGui.EndChild();
+        }
+
         return changed;
+    }
+
+    private static bool TryParseCustomChannelId(string text, out int channelId)
+    {
+        if (int.TryParse((text ?? string.Empty).Trim(), out channelId) && channelId >= 0)
+            return true;
+
+        channelId = 0;
+        return false;
     }
 
     private void DrawBasicDownstreamSettings()
@@ -502,13 +564,15 @@ public sealed class SettingsWindow
             MinUploadIntervalMs = source.MinUploadIntervalMs,
             ChannelAllowList = source.ChannelAllowList == null ? [] : [.. source.ChannelAllowList],
             UploadAllChannelList = source.UploadAllChannelList == null ? [] : [.. source.UploadAllChannelList],
+            UploadAllCustomChannelList = source.UploadAllCustomChannelList == null ? [] : [.. source.UploadAllCustomChannelList],
             KeywordRules = source.KeywordRules == null ? [] : [.. source.KeywordRules],
             KeywordChannelRules = source.KeywordChannelRules == null
                 ? []
                 : source.KeywordChannelRules.Select(rule => new BridgeKeywordChannelRule
                 {
                     Keyword = rule.Keyword ?? string.Empty,
-                    ChannelAllowList = rule.ChannelAllowList == null ? [] : [.. rule.ChannelAllowList]
+                    ChannelAllowList = rule.ChannelAllowList == null ? [] : [.. rule.ChannelAllowList],
+                    CustomChannelAllowList = rule.CustomChannelAllowList == null ? [] : [.. rule.CustomChannelAllowList]
                 }).ToList(),
             KeywordMatchMode = source.KeywordMatchMode,
             KeywordCaseSensitive = source.KeywordCaseSensitive,

@@ -179,7 +179,10 @@ public sealed class RemoteChatBridgeModule : IDisposable
             return;
 
         IReadOnlyCollection<string> resolvedKeywordRules = [];
-        var uploadAllByChannel = _options.UploadAllChannelList.Contains(type);
+        var uploadAllByChannel = BridgeProtocol.IsChannelAllowed(
+            type,
+            _options.UploadAllChannelList,
+            _options.UploadAllCustomChannelList);
         if (!uploadAllByChannel && !BridgeProtocol.TryResolveKeywordRules(
                 type,
                 _options.KeywordChannelRules,

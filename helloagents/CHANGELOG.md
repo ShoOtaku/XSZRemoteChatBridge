@@ -6,6 +6,7 @@
 
 ## [Unreleased]
 
+- 新增自定义频道 ID 支持：上行全量频道与关键词频道规则现在都可手动追加 raw channel id，并在运行时按原始频道值匹配。
 - 优化 WS 同 key 冲突告警：增加 `1012/1013` 冲突识别与重复告警节流，降低持续刷警告噪音。
 - 优化 WS 冲突重连策略：当会话关闭原因为 `replaced/already_connected` 时，插件标记为“同 key 连接冲突”并提高重连退避等级，减少告警刷屏。
 - 下行发送实现切换为普通文本走 `UIModule.ProcessChatBoxEntry`，斜杠命令走 `ShellCommandModule.ExecuteCommandInner`，不再依赖 `ICommandManager.ProcessCommand`。

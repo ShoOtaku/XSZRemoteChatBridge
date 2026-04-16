@@ -12,6 +12,7 @@ public sealed class BridgeKeywordChannelRule
 {
     public string Keyword { get; set; } = string.Empty;
     public HashSet<XivChatType> ChannelAllowList { get; set; } = [];
+    public HashSet<int> CustomChannelAllowList { get; set; } = [];
 }
 
 public sealed class BridgeOptions
@@ -36,6 +37,7 @@ public sealed class BridgeOptions
 
     public HashSet<XivChatType> ChannelAllowList { get; set; } = [XivChatType.Party];
     public HashSet<XivChatType> UploadAllChannelList { get; set; } = [];
+    public HashSet<int> UploadAllCustomChannelList { get; set; } = [];
     public List<string> KeywordRules { get; set; } = [];
     public List<BridgeKeywordChannelRule> KeywordChannelRules { get; set; } = [];
     public BridgeKeywordMatchMode KeywordMatchMode { get; set; } = BridgeKeywordMatchMode.Any;
@@ -87,6 +89,7 @@ public sealed class BridgeOptions
         ChannelAllowList = [];
         UploadAllChannelList ??= [];
         UploadAllChannelList = [.. UploadAllChannelList];
+        UploadAllCustomChannelList = NormalizeCustomChannelIds(UploadAllCustomChannelList);
         KeywordRules = (KeywordRules ?? [])
             .Select(rule => (rule ?? string.Empty).Trim())
             .Where(rule => !string.IsNullOrWhiteSpace(rule))
@@ -97,22 +100,26 @@ public sealed class BridgeOptions
             .Select(rule => new BridgeKeywordChannelRule
             {
                 Keyword = (rule?.Keyword ?? string.Empty).Trim(),
-                ChannelAllowList = rule?.ChannelAllowList == null ? [] : [.. rule.ChannelAllowList]
+                ChannelAllowList = rule?.ChannelAllowList == null ? [] : [.. rule.ChannelAllowList],
+                CustomChannelAllowList = NormalizeCustomChannelIds(rule?.CustomChannelAllowList)
             })
             .Where(rule => !string.IsNullOrWhiteSpace(rule.Keyword))
             .GroupBy(rule => rule.Keyword, KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
                 var merged = new HashSet<XivChatType>();
+                var mergedCustom = new HashSet<int>();
                 foreach (var item in group)
                 {
                     merged.UnionWith(item.ChannelAllowList);
+                    mergedCustom.UnionWith(item.CustomChannelAllowList);
                 }
 
                 return new BridgeKeywordChannelRule
                 {
                     Keyword = group.First().Keyword,
-                    ChannelAllowList = merged
+                    ChannelAllowList = merged,
+                    CustomChannelAllowList = mergedCustom
                 };
             })
             .ToList();
@@ -123,7 +130,8 @@ public sealed class BridgeOptions
                 .Select(keyword => new BridgeKeywordChannelRule
                 {
                     Keyword = keyword,
-                    ChannelAllowList = [.. Enum.GetValues<XivChatType>()]
+                    ChannelAllowList = [.. Enum.GetValues<XivChatType>()],
+                    CustomChannelAllowList = []
                 })
                 .ToList();
         }
@@ -135,5 +143,13 @@ public sealed class BridgeOptions
                 .Distinct(KeywordCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
+    }
+
+    private static HashSet<int> NormalizeCustomChannelIds(IEnumerable<int>? channelIds)
+    {
+        return (channelIds ?? [])
+            .Where(channelId => channelId >= 0)
+            .Distinct()
+            .ToHashSet();
     }
 }

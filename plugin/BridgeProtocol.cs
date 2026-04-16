@@ -155,11 +155,18 @@ public static class BridgeProtocol
         return Convert.ToHexString(hmac.ComputeHash(bytes)).ToLowerInvariant();
     }
 
-    public static bool IsChannelAllowed(XivChatType chatType, IReadOnlyCollection<XivChatType> allowList)
+    public static bool IsChannelAllowed(
+        XivChatType chatType,
+        IReadOnlyCollection<XivChatType> allowList,
+        IReadOnlyCollection<int>? customAllowList = null)
     {
-        if (allowList == null || allowList.Count == 0)
-            return false;
-        return allowList.Contains(chatType);
+        if (allowList != null && allowList.Contains(chatType))
+            return true;
+
+        if (customAllowList != null && customAllowList.Contains((int)chatType))
+            return true;
+
+        return false;
     }
 
     public static bool TryResolveKeywordRules(
@@ -178,7 +185,7 @@ public static class BridgeProtocol
             var scopedKeywords = keywordChannelRules
                 .Where(rule => rule != null &&
                                !string.IsNullOrWhiteSpace(rule.Keyword) &&
-                               IsChannelAllowed(chatType, rule.ChannelAllowList))
+                               IsChannelAllowed(chatType, rule.ChannelAllowList, rule.CustomChannelAllowList))
                 .Select(rule => rule.Keyword.Trim())
                 .Distinct(comparer)
                 .ToArray();
