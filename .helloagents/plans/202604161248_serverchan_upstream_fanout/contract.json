@@ -1,0 +1,41 @@
+{
+  "updatedAt": "2026-04-16T04:45:01.360Z",
+  "version": 1,
+  "source": "~plan",
+  "originCommand": "plan",
+  "verifyMode": "review-first",
+  "reviewerFocus": [
+    "上行分发是否真正解耦 bot 与 Server酱3 两个目标，并支持单独启停与单独配置校验",
+    "未配置机器人时，Server酱3 是否仍可单独承担消息推送",
+    "掉线提醒是否也复用同一目标分发能力，而不是继续绑定 bot 的旧判断",
+    "新增日志是否避免泄露完整 Server酱3 推送 URL 或 SendKey"
+  ],
+  "testerFocus": [
+    "dotnet build plugin/XSZRemoteChatBridge.csproj -c Debug 成功",
+    "设置页可保存并重载 Server酱3 开关与发送地址",
+    "命中过滤规则的聊天消息在仅 bot、仅 Server酱3、bot+Server酱3 三种组合下都按预期发送",
+    "掉线提醒在仅 bot、仅 Server酱3、bot+Server酱3 三种组合下都按预期发送"
+  ],
+  "ui": {
+    "required": false,
+    "designContract": false,
+    "sourcePriority": [],
+    "styleAdvisor": {
+      "required": false,
+      "reason": "",
+      "focus": []
+    },
+    "visualValidation": {
+      "required": false,
+      "reason": "",
+      "screens": [],
+      "states": []
+    }
+  },
+  "advisor": {
+    "required": false,
+    "reason": "",
+    "focus": [],
+    "preferredSources": []
+  }
+}

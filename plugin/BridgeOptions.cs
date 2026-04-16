@@ -19,11 +19,14 @@ public sealed class BridgeOptions
 {
     public bool Enabled { get; set; } = true;
     public bool EnableUpstream { get; set; } = true;
+    public bool EnableBotPush { get; set; } = true;
+    public bool EnableServerChanPush { get; set; }
     public bool EnableDownstream { get; set; } = true;
     public bool EnableWebSocketDownstream { get; set; } = true;
     public bool EnableDisconnectReminder { get; set; }
 
     public string IngestEndpoint { get; set; } = "http://127.0.0.1:8080/ff14/bridge/ingest";
+    public string ServerChanSendUrl { get; set; } = string.Empty;
     public string PullEndpoint { get; set; } = "http://127.0.0.1:8080/ff14/bridge/pull";
     public string WebSocketEndpoint { get; set; } = "ws://127.0.0.1:8080/ff14/bridge/ws";
 
@@ -61,6 +64,7 @@ public sealed class BridgeOptions
     public void Normalize()
     {
         IngestEndpoint = (IngestEndpoint ?? string.Empty).Trim();
+        ServerChanSendUrl = (ServerChanSendUrl ?? string.Empty).Trim();
         PullEndpoint = (PullEndpoint ?? string.Empty).Trim();
         WebSocketEndpoint = (WebSocketEndpoint ?? string.Empty).Trim();
         BridgeKey = (BridgeKey ?? string.Empty).Trim();

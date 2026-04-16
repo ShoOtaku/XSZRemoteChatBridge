@@ -39,6 +39,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
 
     private readonly PluginServices _services;
     private readonly BridgeOptions _options;
+    private readonly ServerChanPushClient _serverChanPushClient;
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly object _startGate = new();
     private readonly HashSet<nint> _disconnectReminderTriggeredAddons = [];
@@ -52,6 +53,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
         _services = services;
         _options = options;
         _options.Normalize();
+        _serverChanPushClient = new ServerChanPushClient(HttpClient);
     }
 
     public void Init()
@@ -78,14 +80,14 @@ public sealed class RemoteChatBridgeModule : IDisposable
             _services.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, DisconnectDialogAddonName, OnDialogueLifecycleCleanup);
             _services.Log.Information(
                 $"[RemoteChatBridge] 已启用掉线提醒（监听 {DisconnectDialogAddonName} / {AddonEvent.PostDraw},{AddonEvent.PostHide},{AddonEvent.PreFinalize}），" +
-                $"IngestEndpoint={_options.IngestEndpoint}, BridgeKey={_options.BridgeKey}, BridgeSecret={(string.IsNullOrWhiteSpace(_options.BridgeSecret) ? "<empty>" : "<set>")}");
+                $"Targets={BuildEnabledPushTargetsSummary()}");
         }
 
         if (_options.EnableUpstream || _options.LogAllChatMessages)
         {
             _services.Chat.ChatMessage += OnChatMessage;
             if (_options.EnableUpstream)
-                _services.Log.Information("[RemoteChatBridge] 已启用聊天上行桥接");
+                _services.Log.Information($"[RemoteChatBridge] 已启用聊天上行桥接，Targets={BuildEnabledPushTargetsSummary()}");
             else
                 _services.Log.Information("[RemoteChatBridge] 已启用聊天调试日志（仅记录，不上行）");
         }
@@ -167,14 +169,6 @@ public sealed class RemoteChatBridgeModule : IDisposable
         if (!_options.Enabled || !_options.EnableUpstream)
             return;
 
-        if (string.IsNullOrWhiteSpace(_options.BridgeSecret) ||
-            string.IsNullOrWhiteSpace(_options.BridgeKey) ||
-            string.IsNullOrWhiteSpace(_options.IngestEndpoint))
-        {
-            HandleDropped("上行配置不完整，跳过消息");
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(content))
             return;
 
@@ -221,7 +215,9 @@ public sealed class RemoteChatBridgeModule : IDisposable
 
         var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
         var payload = BridgeProtocol.BuildPayload(type, senderName, worldName, content);
-        _ = Task.Run(() => UploadWithRetryAsync(payload, _disposeCts.Token), _disposeCts.Token);
+        _ = Task.Run(
+            () => DispatchChatPushTargetsAsync(chatTypeDisplay, senderName, worldName, content, payload, _disposeCts.Token),
+            _disposeCts.Token);
     }
 
     private void OnDialoguePostDraw(AddonEvent eventType, AddonArgs args)
@@ -416,24 +412,12 @@ public sealed class RemoteChatBridgeModule : IDisposable
         if (cancellationToken.IsCancellationRequested)
             return;
 
-        if (string.IsNullOrWhiteSpace(_options.IngestEndpoint) ||
-            string.IsNullOrWhiteSpace(_options.BridgeKey) ||
-            string.IsNullOrWhiteSpace(_options.BridgeSecret))
-        {
-            HandleDropped("掉线提醒配置不完整，跳过推送");
-            return;
-        }
-
         var localPlayerName = _services.ObjectTable.LocalPlayer?.Name.TextValue?.Trim() ?? string.Empty;
         var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
-        var playerDisplay = string.IsNullOrWhiteSpace(localPlayerName)
-            ? "当前角色"
-            : string.IsNullOrWhiteSpace(worldName)
-                ? localPlayerName
-                : $"{localPlayerName}@{worldName}";
+        var playerDisplay = BuildPlayerDisplay(localPlayerName, worldName);
         var content = $"【掉线提醒】检测到连接中断：{DisconnectDialogKeyword}（{playerDisplay}）";
         var payload = BridgeProtocol.BuildPayload(XivChatType.SystemMessage, "系统", worldName, content);
-        await UploadWithRetryAsync(payload, cancellationToken).ConfigureAwait(false);
+        await DispatchDisconnectReminderTargetsAsync(payload, playerDisplay, worldName, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PullLoopAsync(CancellationToken cancellationToken)
@@ -617,6 +601,81 @@ public sealed class RemoteChatBridgeModule : IDisposable
             .Trim();
     }
 
+    private async Task DispatchChatPushTargetsAsync(
+        string chatTypeDisplay,
+        string senderName,
+        string worldName,
+        string content,
+        BridgePayload payload,
+        CancellationToken cancellationToken)
+    {
+        var serverChanTitle = ServerChanPushClient.BuildChatTitle(chatTypeDisplay, senderName);
+        var serverChanDescription = ServerChanPushClient.BuildChatDescription(chatTypeDisplay, senderName, worldName, content);
+        await DispatchPushTargetsAsync(payload, serverChanTitle, serverChanDescription, "聊天上行", cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task DispatchDisconnectReminderTargetsAsync(
+        BridgePayload payload,
+        string playerDisplay,
+        string worldName,
+        CancellationToken cancellationToken)
+    {
+        var serverChanTitle = ServerChanPushClient.BuildDisconnectTitle();
+        var serverChanDescription = ServerChanPushClient.BuildDisconnectDescription(
+            playerDisplay,
+            worldName,
+            DisconnectDialogKeyword);
+        await DispatchPushTargetsAsync(payload, serverChanTitle, serverChanDescription, "掉线提醒", cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task DispatchPushTargetsAsync(
+        BridgePayload payload,
+        string serverChanTitle,
+        string serverChanDescription,
+        string scenarioName,
+        CancellationToken cancellationToken)
+    {
+        var tasks = new List<Task>(2);
+        if (IsBotPushAvailable())
+            tasks.Add(UploadWithRetryAsync(payload, cancellationToken));
+        if (IsServerChanPushAvailable())
+            tasks.Add(SendServerChanAsync(serverChanTitle, serverChanDescription, scenarioName, cancellationToken));
+
+        if (tasks.Count == 0)
+        {
+            HandleDropped($"{scenarioName}未配置可用推送目标，跳过推送");
+            return;
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    private async Task SendServerChanAsync(
+        string title,
+        string description,
+        string scenarioName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.HttpTimeoutMs);
+            await _serverChanPushClient
+                .SendAsync(_options.ServerChanSendUrl, title, description, timeoutCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _services.Log.Warning($"[RemoteChatBridge] Server酱 {scenarioName}超时，推送结束");
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Warning($"[RemoteChatBridge] Server酱 {scenarioName}失败: {ex.Message}");
+        }
+    }
+
     private async Task UploadWithRetryAsync(BridgePayload payload, CancellationToken cancellationToken)
     {
         var rawBody = JsonSerializer.Serialize(payload, SerializerOptions);
@@ -652,7 +711,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
                 {
                     var statusCode = (int)response.StatusCode;
                     var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                    _services.Log.Warning($"[RemoteChatBridge] 上行失败: status={statusCode}, body={content}");
+                    _services.Log.Warning($"[RemoteChatBridge] 机器人推送失败: status={statusCode}, body={content}");
                     return;
                 }
             }
@@ -660,7 +719,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
             {
                 if (attempt >= maxAttempt)
                 {
-                    _services.Log.Warning("[RemoteChatBridge] 上行超时，重试结束");
+                    _services.Log.Warning("[RemoteChatBridge] 机器人推送超时，重试结束");
                     return;
                 }
             }
@@ -668,7 +727,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
             {
                 if (attempt >= maxAttempt)
                 {
-                    _services.Log.Warning($"[RemoteChatBridge] 上行异常，重试结束: {ex.Message}");
+                    _services.Log.Warning($"[RemoteChatBridge] 机器人推送异常，重试结束: {ex.Message}");
                     return;
                 }
             }
@@ -713,39 +772,67 @@ public sealed class RemoteChatBridgeModule : IDisposable
                text.Contains(DisconnectDialogKeyword, StringComparison.Ordinal);
     }
 
+    private bool IsBotPushAvailable()
+    {
+        return _options.EnableBotPush && GetBotPushMissingFields().Count == 0;
+    }
+
+    private bool IsServerChanPushAvailable()
+    {
+        return _options.EnableServerChanPush && GetServerChanPushMissingFields().Count == 0;
+    }
+
+    private List<string> GetBotPushMissingFields()
+    {
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(_options.IngestEndpoint))
+            missing.Add(nameof(_options.IngestEndpoint));
+        if (string.IsNullOrWhiteSpace(_options.BridgeKey))
+            missing.Add(nameof(_options.BridgeKey));
+        if (string.IsNullOrWhiteSpace(_options.BridgeSecret))
+            missing.Add(nameof(_options.BridgeSecret));
+        return missing;
+    }
+
+    private List<string> GetServerChanPushMissingFields()
+    {
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(_options.ServerChanSendUrl))
+            missing.Add(nameof(_options.ServerChanSendUrl));
+        return missing;
+    }
+
+    private string BuildEnabledPushTargetsSummary()
+    {
+        var targets = new List<string>();
+        if (_options.EnableBotPush)
+            targets.Add("bot");
+        if (_options.EnableServerChanPush)
+            targets.Add("serverchan");
+        return targets.Count == 0 ? "none" : string.Join(",", targets);
+    }
+
+    private static string BuildPlayerDisplay(string localPlayerName, string worldName)
+    {
+        if (string.IsNullOrWhiteSpace(localPlayerName))
+            return "当前角色";
+
+        return string.IsNullOrWhiteSpace(worldName)
+            ? localPlayerName
+            : $"{localPlayerName}@{worldName}";
+    }
+
     private void ValidateBridgeConfiguration()
     {
         if (_options.EnableUpstream)
-        {
-            var missing = new List<string>();
-            if (string.IsNullOrWhiteSpace(_options.IngestEndpoint))
-                missing.Add(nameof(_options.IngestEndpoint));
-            if (string.IsNullOrWhiteSpace(_options.BridgeKey))
-                missing.Add(nameof(_options.BridgeKey));
-            if (string.IsNullOrWhiteSpace(_options.BridgeSecret))
-                missing.Add(nameof(_options.BridgeSecret));
-            if (missing.Count > 0)
-            {
-                _services.Log.Warning(
-                    $"[RemoteChatBridge] 上行配置不完整: {string.Join(", ", missing)}。当前聊天消息不会上行到机器人。");
-            }
-        }
+            ValidatePushTargets(
+                "聊天上行",
+                "当前聊天消息不会推送到任何目标。");
 
         if (_options.EnableDisconnectReminder)
-        {
-            var missing = new List<string>();
-            if (string.IsNullOrWhiteSpace(_options.IngestEndpoint))
-                missing.Add(nameof(_options.IngestEndpoint));
-            if (string.IsNullOrWhiteSpace(_options.BridgeKey))
-                missing.Add(nameof(_options.BridgeKey));
-            if (string.IsNullOrWhiteSpace(_options.BridgeSecret))
-                missing.Add(nameof(_options.BridgeSecret));
-            if (missing.Count > 0)
-            {
-                _services.Log.Warning(
-                    $"[RemoteChatBridge] 掉线提醒配置不完整: {string.Join(", ", missing)}。检测到掉线弹窗时将无法推送到 QQ。");
-            }
-        }
+            ValidatePushTargets(
+                "掉线提醒",
+                "检测到掉线弹窗时将不会推送到任何目标。");
 
         if (_options.EnableDownstream)
         {
@@ -768,6 +855,35 @@ public sealed class RemoteChatBridgeModule : IDisposable
             if (string.IsNullOrWhiteSpace(_options.PullEndpoint))
             {
                 _services.Log.Warning("[RemoteChatBridge] PullEndpoint 为空，WS 异常时将无法回退 pull。");
+            }
+        }
+    }
+
+    private void ValidatePushTargets(string scenarioName, string noTargetMessage)
+    {
+        if (!_options.EnableBotPush && !_options.EnableServerChanPush)
+        {
+            _services.Log.Warning($"[RemoteChatBridge] {scenarioName}未启用任何推送目标。{noTargetMessage}");
+            return;
+        }
+
+        if (_options.EnableBotPush)
+        {
+            var botMissing = GetBotPushMissingFields();
+            if (botMissing.Count > 0)
+            {
+                _services.Log.Warning(
+                    $"[RemoteChatBridge] {scenarioName}的机器人推送配置不完整: {string.Join(", ", botMissing)}。");
+            }
+        }
+
+        if (_options.EnableServerChanPush)
+        {
+            var serverChanMissing = GetServerChanPushMissingFields();
+            if (serverChanMissing.Count > 0)
+            {
+                _services.Log.Warning(
+                    $"[RemoteChatBridge] {scenarioName}的 Server酱 配置不完整: {string.Join(", ", serverChanMissing)}。");
             }
         }
     }

@@ -7,9 +7,15 @@ namespace XSZRemoteChatBridge;
 public sealed class SettingsWindow
 {
     private const int AutoApplyDebounceMs = 500;
+    private const string ServerChanDocsUrl = "https://doc.sc3.ft07.com/zh/serverchan3";
+    private const string ServerChanApiUrl = "https://doc.sc3.ft07.com/zh/serverchan3/server/api";
+    private const string ServerChanInstallUrl = "https://doc.sc3.ft07.com/zh/serverchan3/app/install";
+    private const string ServerChanSendKeyUrl = "https://sc3.ft07.com/sendkey";
+    private const string ServerChanHomeUrl = "https://sc3.ft07.com";
 
     private readonly Action<BridgeOptions> _autoApplyAction;
     private readonly Action _reloadAction;
+    private readonly Action<string> _openUrlAction;
 
     private BridgeOptions _draft = new();
     private int _selectedKeywordRuleIndex = -1;
@@ -22,10 +28,15 @@ public sealed class SettingsWindow
 
     public bool IsOpen { get; set; }
 
-    public SettingsWindow(BridgeOptions source, Action<BridgeOptions> autoApplyAction, Action reloadAction)
+    public SettingsWindow(
+        BridgeOptions source,
+        Action<BridgeOptions> autoApplyAction,
+        Action reloadAction,
+        Action<string> openUrlAction)
     {
         _autoApplyAction = autoApplyAction;
         _reloadAction = reloadAction;
+        _openUrlAction = openUrlAction;
         LoadFrom(source);
     }
 
@@ -85,6 +96,12 @@ public sealed class SettingsWindow
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Server酱"))
+            {
+                DrawServerChanPage();
+                ImGui.EndTabItem();
+            }
+
             ImGui.EndTabBar();
         }
 
@@ -141,18 +158,52 @@ public sealed class SettingsWindow
             DrawDebugSettings();
     }
 
+    private void DrawServerChanPage()
+    {
+        ImGui.TextWrapped("这里整理了 Server酱 接入本插件时最常用的说明和入口。点击下方网址会直接在系统浏览器中打开。");
+        ImGui.Spacing();
+
+        ImGui.TextWrapped("使用步骤");
+        ImGui.BulletText("1. 打开 SendKey 页面并登录，复制官方提供的 API URL，最省事。");
+        ImGui.BulletText("2. 回到本插件的“基础 -> 接口与签名”，启用“Server酱 推送目标”。");
+        ImGui.BulletText("3. 将复制到的 API URL 填入“Server酱 Send URL”。");
+        ImGui.BulletText("4. 如需手机正常收信，按官方 APP 安装与配置文档完成权限设置。");
+        ImGui.BulletText("5. 需要了解 `title / desp` 格式或调试接口时，查看 API 文档。");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextWrapped("推荐直接复制的地址格式");
+        ImGui.TextDisabled("https://<uid>.push.ft07.com/send/<sendkey>.send");
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        DrawExternalLink("官方首页", ServerChanHomeUrl);
+        DrawExternalLink("SendKey 页面", ServerChanSendKeyUrl);
+        DrawExternalLink("使用说明书", ServerChanDocsUrl);
+        DrawExternalLink("APP 安装和配置", ServerChanInstallUrl);
+        DrawExternalLink("服务器端 API", ServerChanApiUrl);
+    }
+
     private void DrawSwitches()
     {
         EditBool("启用桥接", _draft.Enabled, value => _draft.Enabled = value);
-        EditBool("启用上行（游戏聊天 -> 机器人）", _draft.EnableUpstream, value => _draft.EnableUpstream = value);
+        EditBool("启用上行消息推送", _draft.EnableUpstream, value => _draft.EnableUpstream = value);
+        EditBool("启用机器人推送目标", _draft.EnableBotPush, value => _draft.EnableBotPush = value);
+        EditBool("启用 Server酱 推送目标", _draft.EnableServerChanPush, value => _draft.EnableServerChanPush = value);
         EditBool("启用下行（机器人 -> 游戏聊天）", _draft.EnableDownstream, value => _draft.EnableDownstream = value);
         EditBool("优先 WebSocket 下行", _draft.EnableWebSocketDownstream, value => _draft.EnableWebSocketDownstream = value);
-        EditBool("掉线提醒（检测到连接中断弹窗时推送到 QQ）", _draft.EnableDisconnectReminder, value => _draft.EnableDisconnectReminder = value);
+        EditBool("掉线提醒（检测到连接中断弹窗时推送到已启用目标）", _draft.EnableDisconnectReminder, value => _draft.EnableDisconnectReminder = value);
     }
 
     private void DrawEndpoints()
     {
-        EditText("上行地址 IngestEndpoint", _draft.IngestEndpoint, 512, value => _draft.IngestEndpoint = value);
+        EditText("机器人上行地址 IngestEndpoint", _draft.IngestEndpoint, 512, value => _draft.IngestEndpoint = value);
+        EditText("Server酱 Send URL", _draft.ServerChanSendUrl, 512, value => _draft.ServerChanSendUrl = value);
+        ImGui.TextDisabled("填写官方 send URL，例如 https://<uid>.push.ft07.com/send/<sendkey>.send");
         EditText("下行 Pull 地址", _draft.PullEndpoint, 512, value => _draft.PullEndpoint = value);
         EditText("下行 WebSocket 地址", _draft.WebSocketEndpoint, 512, value => _draft.WebSocketEndpoint = value);
         EditText("Bridge Key", _draft.BridgeKey, 128, value => _draft.BridgeKey = value);
@@ -487,6 +538,18 @@ public sealed class SettingsWindow
         EditBool("记录下行执行日志", _draft.LogDownlinkMessages, value => _draft.LogDownlinkMessages = value);
     }
 
+    private void DrawExternalLink(string label, string url)
+    {
+        ImGui.TextUnformatted(label);
+        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.38f, 0.64f, 0.96f, 1f));
+        if (ImGui.Selectable($"{url}##{label}", false))
+            _openUrlAction(url);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("点击打开链接");
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
+    }
+
     private static string BuildChannelDisplayLabel(XivChatType chatType)
     {
         var displayName = BridgeProtocol.GetChatTypeDisplayName(chatType);
@@ -550,10 +613,13 @@ public sealed class SettingsWindow
         {
             Enabled = source.Enabled,
             EnableUpstream = source.EnableUpstream,
+            EnableBotPush = source.EnableBotPush,
+            EnableServerChanPush = source.EnableServerChanPush,
             EnableDownstream = source.EnableDownstream,
             EnableWebSocketDownstream = source.EnableWebSocketDownstream,
             EnableDisconnectReminder = source.EnableDisconnectReminder,
             IngestEndpoint = source.IngestEndpoint ?? string.Empty,
+            ServerChanSendUrl = source.ServerChanSendUrl ?? string.Empty,
             PullEndpoint = source.PullEndpoint ?? string.Empty,
             WebSocketEndpoint = source.WebSocketEndpoint ?? string.Empty,
             BridgeKey = source.BridgeKey ?? string.Empty,

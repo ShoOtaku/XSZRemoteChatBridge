@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dalamud.Game.Command;
 using Dalamud.Plugin;
 
@@ -27,7 +28,8 @@ public sealed class Plugin : IDalamudPlugin
         _settingsWindow = new SettingsWindow(
             _configuration.Options,
             autoApplyAction: ApplyAndRestartBridge,
-            reloadAction: () => _settingsWindow.LoadFrom(_configuration.Options));
+            reloadAction: () => _settingsWindow.LoadFrom(_configuration.Options),
+            openUrlAction: OpenExternalUrl);
 
         _pluginInterface.UiBuilder.Draw += OnDrawUi;
         _pluginInterface.UiBuilder.OpenConfigUi += OnOpenConfigUi;
@@ -69,6 +71,24 @@ public sealed class Plugin : IDalamudPlugin
         _module.Init();
 
         _services.Log.Information("[RemoteChatBridge] 配置已保存并重新加载");
+    }
+
+    private void OpenExternalUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(url)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Warning($"[RemoteChatBridge] 打开外部链接失败: {ex.Message}, url={url}");
+        }
     }
 
     public void Dispose()
