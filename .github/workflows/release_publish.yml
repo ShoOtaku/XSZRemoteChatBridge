@@ -25,11 +25,11 @@ jobs:
       - name: Prepare Dalamud references
         shell: pwsh
         run: |
-          $releaseApi = "https://api.github.com/repos/AtmoOmen/Dalamud/releases/latest"
+          $releaseApi = "https://api.github.com/repos/Dalamud-DailyRoutines/Dalamud/releases/latest"
           $release = Invoke-RestMethod -Uri $releaseApi -Headers @{ "User-Agent" = "XSZRemoteChatBridge-CI" }
           $asset = $release.assets | Where-Object { $_.name -eq "latest.7z" } | Select-Object -First 1
           if ($null -eq $asset) {
-            throw "AtmoOmen/Dalamud latest release missing asset: latest.7z"
+            throw "Dalamud-DailyRoutines/Dalamud latest release missing asset: latest.7z"
           }
 
           $archivePath = Join-Path $env:RUNNER_TEMP $asset.name
