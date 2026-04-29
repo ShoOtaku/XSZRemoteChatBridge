@@ -11,7 +11,8 @@
     "chat",
     "bridge"
   ],
-  "DalamudApiLevel": 14,
+  "AssemblyVersion": "0.0.0.0",
+  "DalamudApiLevel": 15,
   "LoadRequiredState": 0,
   "LoadSync": false,
   "CanUnloadAsync": false,

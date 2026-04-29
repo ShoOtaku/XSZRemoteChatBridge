@@ -22,7 +22,10 @@ param(
     [string]$DistributionBranch = "main",
 
     [Parameter(Mandatory = $false)]
-    [string]$PluginPathInRepo = "plugins/XSZRemoteChatBridge/latest.zip"
+    [string]$PluginPathInRepo = "plugins/XSZRemoteChatBridge/latest.zip",
+
+    [Parameter(Mandatory = $false)]
+    [string]$PluginJsonPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +62,18 @@ if ($null -ne $parsedPluginmaster) {
 }
 
 $metadata = Get-Content -Path $MetadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+if (-not [string]::IsNullOrWhiteSpace($PluginJsonPath) -and (Test-Path -Path $PluginJsonPath)) {
+    $pluginJson = Get-Content -Path $PluginJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $pluginJsonVersion = [string]$pluginJson.AssemblyVersion
+    if ([string]::IsNullOrWhiteSpace($pluginJsonVersion)) {
+        throw "Plugin JSON at '$PluginJsonPath' is missing AssemblyVersion field"
+    }
+    if ($pluginJsonVersion -ne $AssemblyVersion) {
+        throw "Version mismatch: plugin JSON AssemblyVersion '$pluginJsonVersion' != CI AssemblyVersion '$AssemblyVersion'"
+    }
+    Write-Host "Version validation passed: $pluginJsonVersion"
+}
 
 $downloadUrl = "https://raw.githubusercontent.com/$DistributionRepo/$DistributionBranch/$PluginPathInRepo"
 $downloadUrl = $downloadUrl.Replace("\", "/")

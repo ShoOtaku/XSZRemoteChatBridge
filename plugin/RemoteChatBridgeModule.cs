@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game.Chat;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Plugin.Services;
@@ -159,16 +160,16 @@ public sealed class RemoteChatBridgeModule : IDisposable
         _disposeCts.Dispose();
     }
 
-    private void OnChatMessage(XivChatType type, int timestamp, ref SeString sender, ref SeString message, ref bool isHandled)
+    private void OnChatMessage(IHandleableChatMessage msg)
     {
-        var senderName = sender.TextValue?.Trim() ?? string.Empty;
-        var content = message.TextValue?.Trim() ?? string.Empty;
-        var chatTypeDisplay = BridgeProtocol.GetChatTypeDisplayName(type);
+        var senderName = msg.Sender.TextValue?.Trim() ?? string.Empty;
+        var content = msg.Message.TextValue?.Trim() ?? string.Empty;
+        var chatTypeDisplay = BridgeProtocol.GetChatTypeDisplayName(msg.LogKind);
 
         if (_options.LogAllChatMessages)
         {
             _services.Log.Information(
-                $"[RemoteChatBridge] 聊天调试: 频道={chatTypeDisplay}({type}/{(int)type}) 发送者={senderName} 内容={content}");
+                $"[RemoteChatBridge] 聊天调试: 频道={chatTypeDisplay}({msg.LogKind}/{(int)msg.LogKind}) 发送者={senderName} 内容={content}");
         }
 
         if (!_options.Enabled || !_options.EnableUpstream)
@@ -179,18 +180,18 @@ public sealed class RemoteChatBridgeModule : IDisposable
 
         IReadOnlyCollection<string> resolvedKeywordRules = [];
         var uploadAllByChannel = BridgeProtocol.IsChannelAllowed(
-            type,
+            msg.LogKind,
             _options.UploadAllChannelList,
             _options.UploadAllCustomChannelList);
         if (!uploadAllByChannel && !BridgeProtocol.TryResolveKeywordRules(
-                type,
+                msg.LogKind,
                 _options.KeywordChannelRules,
                 AllChatTypes,
                 _options.KeywordRules,
                 _options.KeywordCaseSensitive,
                 out resolvedKeywordRules))
         {
-            HandleDropped($"频道未命中: {type}");
+            HandleDropped($"频道未命中: {msg.LogKind}");
             return;
         }
 
@@ -219,7 +220,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
         }
 
         var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
-        var payload = BridgeProtocol.BuildPayload(type, senderName, worldName, content);
+        var payload = BridgeProtocol.BuildPayload(msg.LogKind, senderName, worldName, content);
         _ = Task.Run(
             () => DispatchChatPushTargetsAsync(chatTypeDisplay, senderName, worldName, content, payload, _disposeCts.Token),
             _disposeCts.Token);
