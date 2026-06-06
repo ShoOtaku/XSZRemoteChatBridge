@@ -24,6 +24,7 @@ public sealed class BridgeOptions
     public bool EnableDownstream { get; set; } = true;
     public bool EnableWebSocketDownstream { get; set; } = true;
     public bool EnableDisconnectReminder { get; set; }
+    public int DisconnectReminderIntervalSeconds { get; set; } = 60;
 
     public string IngestEndpoint { get; set; } = "http://127.0.0.1:8080/ff14/bridge/ingest";
     public string ServerChanSendUrl { get; set; } = string.Empty;
@@ -75,6 +76,7 @@ public sealed class BridgeOptions
         MaxRetryCount = Math.Clamp(MaxRetryCount, 0, 10);
         RetryDelayMs = Math.Clamp(RetryDelayMs, 0, 30000);
         MinUploadIntervalMs = Math.Clamp(MinUploadIntervalMs, 0, 60000);
+        DisconnectReminderIntervalSeconds = Math.Clamp(DisconnectReminderIntervalSeconds, 10, 3600);
 
         PullIntervalMs = Math.Clamp(PullIntervalMs, 500, 60000);
         PullBatchSize = Math.Clamp(PullBatchSize, 1, 20);

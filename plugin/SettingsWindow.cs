@@ -197,6 +197,13 @@ public sealed class SettingsWindow
         EditBool("启用下行（机器人 -> 游戏聊天）", _draft.EnableDownstream, value => _draft.EnableDownstream = value);
         EditBool("优先 WebSocket 下行", _draft.EnableWebSocketDownstream, value => _draft.EnableWebSocketDownstream = value);
         EditBool("掉线提醒（检测到连接中断弹窗时推送到已启用目标）", _draft.EnableDisconnectReminder, value => _draft.EnableDisconnectReminder = value);
+        if (_draft.EnableDisconnectReminder)
+        {
+            ImGui.Indent();
+            EditInt("提醒间隔(秒)", _draft.DisconnectReminderIntervalSeconds,
+                value => _draft.DisconnectReminderIntervalSeconds = value);
+            ImGui.Unindent();
+        }
     }
 
     private void DrawEndpoints()
@@ -618,6 +625,7 @@ public sealed class SettingsWindow
             EnableDownstream = source.EnableDownstream,
             EnableWebSocketDownstream = source.EnableWebSocketDownstream,
             EnableDisconnectReminder = source.EnableDisconnectReminder,
+            DisconnectReminderIntervalSeconds = source.DisconnectReminderIntervalSeconds,
             IngestEndpoint = source.IngestEndpoint ?? string.Empty,
             ServerChanSendUrl = source.ServerChanSendUrl ?? string.Empty,
             PullEndpoint = source.PullEndpoint ?? string.Empty,

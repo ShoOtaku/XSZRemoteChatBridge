@@ -49,6 +49,9 @@ public sealed class RemoteChatBridgeModule : IDisposable
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly object _startGate = new();
     private readonly HashSet<nint> _disconnectReminderTriggeredAddons = [];
+    private Task? _disconnectReminderLoopTask;
+    private readonly object _disconnectReminderLock = new();
+    private bool _disconnectReminderActive;
     private Task? _pullLoopTask;
     private BridgeWebSocketClient? _wsClient;
     private long _lastUploadAtMs;
@@ -86,7 +89,7 @@ public sealed class RemoteChatBridgeModule : IDisposable
             _services.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, DisconnectDialogAddonName, OnDialogueLifecycleCleanup);
             _services.Log.Information(
                 $"[RemoteChatBridge] 已启用掉线提醒（监听 {DisconnectDialogAddonName} / {AddonEvent.PostDraw},{AddonEvent.PostHide},{AddonEvent.PreFinalize}），" +
-                $"Targets={BuildEnabledPushTargetsSummary()}");
+                $"间隔={_options.DisconnectReminderIntervalSeconds}s, Targets={BuildEnabledPushTargetsSummary()}");
         }
 
         if (_options.EnableUpstream || _options.LogAllChatMessages)
@@ -144,6 +147,18 @@ public sealed class RemoteChatBridgeModule : IDisposable
         _disposeCts.Cancel();
         _wsClient?.Dispose();
         _wsClient = null;
+
+        if (_disconnectReminderLoopTask != null)
+        {
+            try
+            {
+                _disconnectReminderLoopTask.Wait(TimeSpan.FromSeconds(2));
+            }
+            catch
+            {
+                // ignore
+            }
+        }
 
         if (_pullLoopTask != null)
         {
@@ -242,7 +257,12 @@ public sealed class RemoteChatBridgeModule : IDisposable
             return;
 
         _disconnectReminderTriggeredAddons.Add(addonAddress);
-        _ = Task.Run(() => PushDisconnectReminderAsync(matchedKeyword, _disposeCts.Token), _disposeCts.Token);
+
+        var playerName = _services.ObjectTable.LocalPlayer?.Name.TextValue?.Trim() ?? string.Empty;
+        var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
+
+        _ = Task.Run(() => PushDisconnectReminderAsync(playerName, worldName, matchedKeyword, _disposeCts.Token), _disposeCts.Token);
+        StartDisconnectReminderLoop(matchedKeyword, playerName, worldName);
     }
 
     private void OnDialogueLifecycleCleanup(AddonEvent eventType, AddonArgs args)
@@ -447,15 +467,90 @@ public sealed class RemoteChatBridgeModule : IDisposable
         return false;
     }
 
-    private async Task PushDisconnectReminderAsync(string matchedKeyword, CancellationToken cancellationToken)
+    private async Task PushDisconnectReminderAsync(
+        string playerName,
+        string worldName,
+        string matchedKeyword,
+        CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
             return;
 
-        var localPlayerName = _services.ObjectTable.LocalPlayer?.Name.TextValue?.Trim() ?? string.Empty;
-        var worldName = _services.ObjectTable.LocalPlayer?.CurrentWorld.ValueNullable?.Name.ToString() ?? string.Empty;
-        var playerDisplay = BuildPlayerDisplay(localPlayerName, worldName);
+        var playerDisplay = BuildPlayerDisplay(playerName, worldName);
         var content = $"【掉线提醒】检测到连接中断：{matchedKeyword}（{playerDisplay}）";
+        var payload = BridgeProtocol.BuildPayload(XivChatType.SystemMessage, "系统", worldName, content);
+        await DispatchDisconnectReminderTargetsAsync(payload, playerDisplay, worldName, matchedKeyword, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private void StartDisconnectReminderLoop(string matchedKeyword, string playerName, string worldName)
+    {
+        lock (_disconnectReminderLock)
+        {
+            if (_disconnectReminderActive)
+                return;
+            _disconnectReminderActive = true;
+            _disconnectReminderLoopTask = Task.Run(
+                () => RunDisconnectReminderLoopAsync(matchedKeyword, playerName, worldName, _disposeCts.Token),
+                _disposeCts.Token);
+        }
+    }
+
+    private async Task RunDisconnectReminderLoopAsync(
+        string matchedKeyword,
+        string playerName,
+        string worldName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _services.Log.Information(
+                $"[RemoteChatBridge] 开始掉线提醒循环（间隔 {_options.DisconnectReminderIntervalSeconds} 秒）");
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(
+                        TimeSpan.FromSeconds(_options.DisconnectReminderIntervalSeconds),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                if (_services.ObjectTable.LocalPlayer != null)
+                {
+                    _services.Log.Information("[RemoteChatBridge] 检测到已重新登录，停止掉线提醒");
+                    return;
+                }
+
+                await SendDisconnectReminderAsync(
+                    matchedKeyword, playerName, worldName, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            lock (_disconnectReminderLock)
+            {
+                _disconnectReminderActive = false;
+                _disconnectReminderLoopTask = null;
+            }
+        }
+    }
+
+    private async Task SendDisconnectReminderAsync(
+        string matchedKeyword,
+        string playerName,
+        string worldName,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
+        var playerDisplay = BuildPlayerDisplay(playerName, worldName);
+        var content = $"【持续掉线提醒】检测到连接中断：{matchedKeyword}（{playerDisplay}）";
         var payload = BridgeProtocol.BuildPayload(XivChatType.SystemMessage, "系统", worldName, content);
         await DispatchDisconnectReminderTargetsAsync(payload, playerDisplay, worldName, matchedKeyword, cancellationToken)
             .ConfigureAwait(false);
